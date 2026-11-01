@@ -1,0 +1,383 @@
+// routes/api.js
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+
+// --- 1. ENDPOINT PRODUK & BUNDLE ---
+router.get('/products', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM products ORDER BY id ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal mengambil data produk' });
+  }
+});
+
+// 1. Ambil semua paket bundling (Bisa difilter berdasarkan type ?type=sewa atau ?type=beli)
+router.get('/bundles', async (req, res) => {
+  const { type } = req.query; // Tangkap query parameter jika ada
+  try {
+    let queryStr = 'SELECT * FROM bundles';
+    let queryParams = [];
+
+    if (type) {
+      queryStr += ' WHERE type = $1';
+      queryParams.push(type);
+    }
+    queryStr += ' ORDER BY id ASC';
+
+    const bundlesResult = await db.query(queryStr, queryParams);
+    const bundles = bundlesResult.rows;
+
+    const fullBundles = await Promise.all(bundles.map(async (bundle) => {
+      const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
+      return {
+        id: bundle.bundle_key,
+        db_id: bundle.id,
+        type: bundle.type || 'beli',
+        label: bundle.label,
+        name: bundle.name,
+        tag: bundle.tag,
+        badge: bundle.badge,
+        disc: bundle.discount_percentage,
+        icon: bundle.icon,
+        color: bundle.color,
+        items: itemsResult.rows.map(item => ({
+          id: item.id,
+          i: item.icon,
+          n: item.item_name,
+          d: item.item_desc,
+          p: Number(item.price)
+        }))
+      };
+    }));
+
+    res.json(fullBundles);
+  } catch (err) {
+    console.error('Error get bundles:', err.message);
+    res.status(500).json({ error: 'Gagal mengambil data bundling' });
+  }
+});
+
+// 2. Tambah paket bundling baru (Admin) dengan dukungan tipe 'beli' atau 'sewa'
+router.post('/admin/bundles', async (req, res) => {
+  const { bundle_key, label, name, tag, badge, discount_percentage, type, items } = req.body;
+  
+  try {
+    await db.query('BEGIN');
+
+    const bundleQuery = `
+      INSERT INTO bundles (bundle_key, label, name, tag, badge, discount_percentage, type) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id;
+    `;
+    const bundleRes = await db.query(bundleQuery, [
+      bundle_key || 'paket-' + Date.now(), 
+      label || 'PAKET HEMAT', 
+      name, 
+      tag, 
+      badge, 
+      discount_percentage || 0,
+      type || 'beli' // Default beli jika tidak diisi
+    ]);
+    
+    const bundleId = bundleRes.rows[0].id;
+
+    if (items && items.length > 0) {
+      for (let item of items) {
+        await db.query(
+          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price) VALUES ($1, $2, $3, $4)',
+          [bundleId, item.name, item.desc || '', item.price || 0]
+        );
+      }
+    }
+
+    await db.query('COMMIT');
+    res.status(201).json({ message: 'Paket bundling berhasil dibuat!' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error add bundle:', err.message);
+    res.status(500).json({ error: 'Gagal membuat paket bundling' });
+  }
+});
+
+
+// --- 2. ENDPOINT GUIDE & BOOKING ---
+router.get('/guides', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM guides ORDER BY rating DESC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal mengambil data guide' });
+  }
+});
+
+router.post('/bookings', async (req, res) => {
+  const { customer_id, guide_id, destination, start_date, total_days, include_porter, include_photo, total_price } = req.body;
+  try {
+    const query = `
+      INSERT INTO guide_bookings (customer_id, guide_id, destination, start_date, total_days, include_porter, include_photo, total_price, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Menunggu Konfirmasi') RETURNING *;
+    `;
+    const newBooking = await db.query(query, [customer_id, guide_id, destination, start_date, total_days, include_porter, include_photo, total_price]);
+    res.status(201).json({ message: 'Booking guide berhasil!', booking: newBooking.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal memproses booking guide' });
+  }
+});
+
+
+// --- 3. ENDPOINT AUTHENTICATION ---
+router.post('/auth/register', async (req, res) => {
+  const { name, email, password, phone, city, address, shoe_size, hiking_level } = req.body;
+  try {
+    const userCheck = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (userCheck.rows.length > 0) return res.status(400).json({ error: 'Email sudah terdaftar!' });
+
+    const newUser = await db.query(
+      `INSERT INTO users (name, email, password_hash, phone, city, address, shoe_size, hiking_level, role) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'customer') RETURNING id, name, email, role, phone, city, hiking_level`,
+      [name, email, password, phone || null, city || null, address || null, shoe_size || null, hiking_level || 'Pemula']
+    );
+    res.status(201).json({ message: 'Registrasi berhasil', user: newUser.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal melakukan pendaftaran' });
+  }
+});
+
+router.post('/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const userResult = await db.query('SELECT id, name, email, role, phone, city, hiking_level FROM users WHERE email = $1 AND password_hash = $2', [email, password]);
+    if (userResult.rows.length === 0) return res.status(401).json({ error: 'Email atau kata sandi salah!' });
+    res.json({ message: 'Login berhasil', user: userResult.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal melakukan login' });
+  }
+});
+
+
+// --- 4. ENDPOINT TRANSAKSI (ORDERS) ---
+router.post('/orders', async (req, res) => {
+  const { customer_id, total_price, items } = req.body;
+  try {
+    const order_type = items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli';
+    const newOrder = await db.query(
+      'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
+      [customer_id, total_price, 'Diproses', order_type]
+    );
+    const orderId = newOrder.rows[0].id;
+
+    for (let item of items) {
+      const productId = typeof item.id === 'string' ? parseInt(item.id.replace('guide-', '')) || null : item.id;
+      // MENYIMPAN NAMA & GAMBAR SECARA PERMANEN
+      await db.query(
+        'INSERT INTO order_items (order_id, product_id, quantity, price_at_time, item_name, item_image, item_type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [orderId, productId, item.qty, item.price, item.name, item.image_url || '', item.type || 'beli']
+      );
+    }
+    res.status(201).json({ message: 'Checkout berhasil', order_id: orderId });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal memproses pesanan' });
+  }
+});
+
+router.get('/orders/user/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const ordersResult = await db.query('SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC', [userId]);
+    const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
+      const itemsResult = await db.query(`
+        SELECT oi.quantity, oi.price_at_time, 
+               COALESCE(oi.item_name, p.name) as name, 
+               COALESCE(oi.item_image, p.image_url) as image_url 
+        FROM order_items oi 
+        LEFT JOIN products p ON oi.product_id = p.id 
+        WHERE oi.order_id = $1
+      `, [order.id]);
+      return { ...order, items: itemsResult.rows };
+    }));
+    res.json(fullOrders);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal mengambil riwayat pesanan' });
+  }
+});
+
+
+// --- 5. ENDPOINT ADMIN ---
+router.post('/admin/products', async (req, res) => {
+  const { name, category, description, price, rent_price_per_day, stock, image_url, is_rentable } = req.body;
+  try {
+    const query = `
+      INSERT INTO products (name, category, description, price, rent_price_per_day, stock, image_url, is_rentable) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;
+    `;
+    const newProduct = await db.query(query, [name, category, description, price, rent_price_per_day || 0, stock || 0, image_url, is_rentable || false]);
+    res.status(201).json({ message: 'Produk ditambahkan', product: newProduct.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal menambah produk' });
+  }
+});
+
+router.put('/admin/products/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, category, description, price, rent_price_per_day, stock, image_url, is_rentable } = req.body;
+  try {
+    const query = `
+      UPDATE products SET name=$1, category=$2, description=$3, price=$4, rent_price_per_day=$5, stock=$6, image_url=$7, is_rentable=$8 
+      WHERE id=$9 RETURNING *;
+    `;
+    const updatedProduct = await db.query(query, [name, category, description, price, rent_price_per_day || 0, stock || 0, image_url, is_rentable || false, id]);
+    res.json({ message: 'Produk diperbarui', product: updatedProduct.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal memperbarui produk' });
+  }
+});
+
+router.delete('/admin/products/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Produk berhasil dihapus' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal menghapus produk' });
+  }
+});
+
+router.get('/orders/all', async (req, res) => {
+  try {
+    const query = `SELECT o.*, u.name as customer_name, u.email as customer_email FROM orders o LEFT JOIN users u ON o.customer_id = u.id ORDER BY o.created_at DESC`;
+    const ordersResult = await db.query(query);
+    res.json(ordersResult.rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal mengambil data pesanan' });
+  }
+});
+
+router.put('/orders/:id/status', async (req, res) => {
+  try {
+    await db.query('UPDATE orders SET status = $1 WHERE id = $2', [req.body.status, req.params.id]);
+    res.json({ message: 'Status berhasil diperbarui' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal memperbarui status' });
+  }
+});
+
+router.get('/admin/stats', async (req, res) => {
+  try {
+    const usersRes = await db.query("SELECT COUNT(*) FROM users WHERE role = 'customer'");
+    const ordersRes = await db.query("SELECT COUNT(*) FROM orders");
+    const revenueRes = await db.query("SELECT SUM(total_price) FROM orders WHERE status != 'Dibatalkan'");
+    res.json({
+      totalUsers: parseInt(usersRes.rows[0].count) || 0,
+      totalOrders: parseInt(ordersRes.rows[0].count) || 0,
+      totalRevenue: parseInt(revenueRes.rows[0].sum) || 0
+    });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal mengambil statistik bisnis' });
+  }
+});
+
+// --- 6. ENDPOINT KELOLA BUNDLING (ADMIN & PUBLIK) ---
+
+// Ambil semua paket bundling beserta itemnya (untuk publik / Home)
+router.get('/bundles', async (req, res) => {
+  try {
+    const bundlesResult = await db.query('SELECT * FROM bundles ORDER BY id ASC');
+    const bundles = bundlesResult.rows;
+
+    const fullBundles = await Promise.all(bundles.map(async (bundle) => {
+      const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
+      return {
+        id: bundle.bundle_key,
+        db_id: bundle.id, // ID asli di database untuk keperluan hapus/edit
+        label: bundle.label,
+        name: bundle.name,
+        tag: bundle.tag,
+        badge: bundle.badge,
+        disc: bundle.discount_percentage,
+        icon: bundle.icon,
+        color: bundle.color,
+        items: itemsResult.rows.map(item => ({
+          id: item.id,
+          i: item.icon,
+          n: item.item_name,
+          d: item.item_desc,
+          p: Number(item.price)
+        }))
+      };
+    }));
+
+    res.json(fullBundles);
+  } catch (err) {
+    console.error('Error get bundles:', err.message);
+    res.status(500).json({ error: 'Gagal mengambil data bundling' });
+  }
+});
+
+// Tambah paket bundling baru (Khusus Admin)
+router.post('/admin/bundles', async (req, res) => {
+  const { bundle_key, label, name, tag, badge, discount_percentage, items } = req.body;
+  
+  try {
+    await db.query('BEGIN');
+
+    // 1. Masukkan data utama bundling
+    const bundleQuery = `
+      INSERT INTO bundles (bundle_key, label, name, tag, badge, discount_percentage) 
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;
+    `;
+    const bundleRes = await db.query(bundleQuery, [
+      bundle_key || 'paket-' + Date.now(), 
+      label || 'PAKET HEMAT', 
+      name, 
+      tag, 
+      badge, 
+      discount_percentage || 0
+    ]);
+    
+    const bundleId = bundleRes.rows[0].id;
+
+    // 2. Masukkan item-item ke dalam paket bundling tersebut
+    if (items && items.length > 0) {
+      for (let item of items) {
+        await db.query(
+          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price) VALUES ($1, $2, $3, $4)',
+          [bundleId, item.name, item.desc || '', item.price || 0]
+        );
+      }
+    }
+
+    await db.query('COMMIT');
+    res.status(201).json({ message: 'Paket bundling berhasil dibuat!' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error add bundle:', err.message);
+    res.status(500).json({ error: 'Gagal membuat paket bundling' });
+  }
+});
+
+// Hapus paket bundling (Khusus Admin)
+router.delete('/admin/bundles/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db.query('DELETE FROM bundles WHERE id = $1', [id]);
+    res.json({ message: 'Paket bundling berhasil dihapus' });
+  } catch (err) {
+    console.error('Error delete bundle:', err.message);
+    res.status(500).json({ error: 'Gagal menghapus paket bundling' });
+  }
+});
+
+module.exports = router;
