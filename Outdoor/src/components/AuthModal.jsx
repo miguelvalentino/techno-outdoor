@@ -16,7 +16,7 @@ export const AuthModal = ({ isOpen, onClose }) => {
     city: '',
     address: '',
     shoe_size: '',
-    hiking_level: 'Pemula' // Default value
+    hiking_level: 'Pemula' 
   });
 
   const { login } = useAuth();

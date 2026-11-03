@@ -16,6 +16,8 @@ export const GuideSection = () => {
   const [guides, setGuides] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  const [selectedMountain, setSelectedMountain] = useState('ALL');
+  
   const today = new Date();
   const defaultEnd = new Date();
   defaultEnd.setDate(today.getDate() + 2); 
@@ -56,6 +58,20 @@ export const GuideSection = () => {
       });
   }, []);
 
+  const availableMountains = Array.from(
+    new Set(
+      guides
+        .flatMap(g => g.mountain_region ? g.mountain_region.split(/&|,/).map(m => m.trim()) : [])
+        .filter(Boolean)
+    )
+  );
+
+  const filteredGuides = guides.filter(guide => {
+    if (selectedMountain === 'ALL') return true;
+    if (!guide.mountain_region) return false;
+    return guide.mountain_region.toUpperCase().includes(selectedMountain.toUpperCase());
+  });
+
   const handleBookGuide = (guide) => {
     const totalCost = Number(guide.price_per_day) * days;
     const displayDate = `${startDate.split('-').reverse().join('/')} s/d ${endDate.split('-').reverse().join('/')}`;
@@ -76,13 +92,31 @@ export const GuideSection = () => {
       <div className="bg-brand-800 text-white rounded-3xl p-6 sm:p-8 mb-8 shadow-xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
         <i className="fa-solid fa-map-location-dot absolute -right-4 -bottom-6 text-[10rem] opacity-10 -rotate-12 pointer-events-none"></i>
         
-        <div className="relative z-10 md:w-1/2">
+        <div className="relative z-10 md:w-1/3">
           <h2 className="text-2xl font-bold mb-2">Booking Pemandu Profesional</h2>
-          <p className="text-brand-100 text-sm">Pemandu terverifikasi kami siap menemani perjalanan Anda. Tentukan tanggal dan jumlah peserta pendakian di sini.</p>
+          <p className="text-brand-100 text-sm">Pilih tujuan gunung, tanggal, dan jumlah peserta pendakian Anda di sini.</p>
         </div>
         
-        {/* INPUT TANGGAL & PESERTA DENGAN TEKS PUTIH BERSIH */}
+        {/* INPUT PILIHAN GUNUNG, TANGGAL & PESERTA */}
         <div className="relative z-10 flex flex-wrap items-center gap-4 bg-black/20 p-4 rounded-2xl backdrop-blur-md w-full md:w-auto border border-white/10">
+          
+          {/* DROPDOWN PILIH GUNUNG */}
+          <div className="flex flex-col w-full sm:w-auto">
+            <label className="text-[10px] font-bold text-brand-200 uppercase mb-1">Gunung Tujuan</label>
+            <select 
+              value={selectedMountain}
+              onChange={e => setSelectedMountain(e.target.value)}
+              className="bg-white/10 text-white text-xs sm:text-sm px-3 py-2 rounded-xl outline-none font-bold cursor-pointer border border-white/20 shadow-sm"
+            >
+              <option value="ALL" className="bg-gray-800 text-white">Semua Gunung</option>
+              {availableMountains.map((mountain, idx) => (
+                <option key={idx} value={mountain} className="bg-gray-800 text-white">
+                  {mountain}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="flex gap-3 items-center">
             <div className="flex flex-col">
               <label className="text-[10px] font-bold text-brand-200 uppercase mb-1">Tgl Mulai</label>
@@ -127,14 +161,14 @@ export const GuideSection = () => {
 
       {loading ? (
         <div className="text-center py-10 text-gray-500">Mencari pemandu yang tersedia...</div>
-      ) : guides.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-2xl border border-gray-100">
+      ) : filteredGuides.length === 0 ? (
+        <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 shadow-sm">
           <i className="fa-solid fa-person-hiking text-4xl text-gray-300 mb-3"></i>
-          <p className="text-gray-500">Belum ada pemandu yang terdaftar di database.</p>
+          <p className="text-gray-500 text-sm font-medium">Tidak ada pemandu yang tersedia untuk gunung tersebut.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {guides.map((guide) => (
+          {filteredGuides.map((guide) => (
             <div key={guide.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col hover:shadow-lg transition relative overflow-hidden group">
               
               {guide.verified && (

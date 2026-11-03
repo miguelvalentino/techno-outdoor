@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
 
-/* Konfigurasi warna kustom untuk Tailwind v4 */
 @theme {
   --color-brand-50: #f0fdf4;
   --color-brand-100: #dcfce7;
@@ -14,7 +13,6 @@
   --color-earth-800: #292524;
 }
 
-/* Base styling */
 html { scroll-behavior: smooth; }
 .hide-scrollbar::-webkit-scrollbar { display: none; }
 .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

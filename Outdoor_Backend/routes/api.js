@@ -3,7 +3,6 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// --- 1. ENDPOINT PRODUK & BUNDLE ---
 router.get('/products', async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM products ORDER BY id ASC');
@@ -14,9 +13,8 @@ router.get('/products', async (req, res) => {
   }
 });
 
-// 1. Ambil semua paket bundling (Bisa difilter berdasarkan type ?type=sewa atau ?type=beli)
 router.get('/bundles', async (req, res) => {
-  const { type } = req.query; // Tangkap query parameter jika ada
+  const { type } = req.query;
   try {
     let queryStr = 'SELECT * FROM bundles';
     let queryParams = [];
@@ -60,7 +58,6 @@ router.get('/bundles', async (req, res) => {
   }
 });
 
-// 2. Tambah paket bundling baru (Admin) dengan dukungan tipe 'beli' atau 'sewa'
 router.post('/admin/bundles', async (req, res) => {
   const { bundle_key, label, name, tag, badge, discount_percentage, type, items } = req.body;
   
@@ -78,7 +75,7 @@ router.post('/admin/bundles', async (req, res) => {
       tag, 
       badge, 
       discount_percentage || 0,
-      type || 'beli' // Default beli jika tidak diisi
+      type || 'beli' 
     ]);
     
     const bundleId = bundleRes.rows[0].id;
@@ -129,7 +126,6 @@ router.post('/bookings', async (req, res) => {
 });
 
 
-// --- 3. ENDPOINT AUTHENTICATION ---
 router.post('/auth/register', async (req, res) => {
   const { name, email, password, phone, city, address, shoe_size, hiking_level } = req.body;
   try {
@@ -161,20 +157,20 @@ router.post('/auth/login', async (req, res) => {
 });
 
 
-// --- 4. ENDPOINT TRANSAKSI (ORDERS) ---
 router.post('/orders', async (req, res) => {
-  const { customer_id, total_price, items } = req.body;
+  const { customer_id, total_price, items, order_type } = req.body;
   try {
-    const order_type = items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli';
+    const finalOrderType = order_type || (items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli');
+        const initialStatus = finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses';
+
     const newOrder = await db.query(
       'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
-      [customer_id, total_price, 'Diproses', order_type]
+      [customer_id, total_price, initialStatus, finalOrderType]
     );
     const orderId = newOrder.rows[0].id;
 
     for (let item of items) {
       const productId = typeof item.id === 'string' ? parseInt(item.id.replace('guide-', '')) || null : item.id;
-      // MENYIMPAN NAMA & GAMBAR SECARA PERMANEN
       await db.query(
         'INSERT INTO order_items (order_id, product_id, quantity, price_at_time, item_name, item_image, item_type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
         [orderId, productId, item.qty, item.price, item.name, item.image_url || '', item.type || 'beli']
@@ -210,7 +206,6 @@ router.get('/orders/user/:userId', async (req, res) => {
 });
 
 
-// --- 5. ENDPOINT ADMIN ---
 router.post('/admin/products', async (req, res) => {
   const { name, category, description, price, rent_price_per_day, stock, image_url, is_rentable } = req.body;
   try {
@@ -254,11 +249,29 @@ router.delete('/admin/products/:id', async (req, res) => {
 
 router.get('/orders/all', async (req, res) => {
   try {
-    const query = `SELECT o.*, u.name as customer_name, u.email as customer_email FROM orders o LEFT JOIN users u ON o.customer_id = u.id ORDER BY o.created_at DESC`;
+    const query = `
+      SELECT o.*, u.name as customer_name, u.email as customer_email 
+      FROM orders o 
+      LEFT JOIN users u ON o.customer_id = u.id 
+      ORDER BY o.created_at DESC
+    `;
     const ordersResult = await db.query(query);
-    res.json(ordersResult.rows);
+    
+    const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
+      const itemsResult = await db.query(`
+        SELECT oi.quantity, oi.price_at_time, oi.item_type,
+               COALESCE(oi.item_name, p.name) as name, 
+               COALESCE(oi.item_image, p.image_url) as image_url 
+        FROM order_items oi 
+        LEFT JOIN products p ON oi.product_id = p.id 
+        WHERE oi.order_id = $1
+      `, [order.id]);
+      return { ...order, items: itemsResult.rows };
+    }));
+
+    res.json(fullOrders);
   } catch (err) {
-    console.error(err.message);
+    console.error('Error get all orders:', err.message);
     res.status(500).json({ error: 'Gagal mengambil data pesanan' });
   }
 });
@@ -289,9 +302,7 @@ router.get('/admin/stats', async (req, res) => {
   }
 });
 
-// --- 6. ENDPOINT KELOLA BUNDLING (ADMIN & PUBLIK) ---
 
-// Ambil semua paket bundling beserta itemnya (untuk publik / Home)
 router.get('/bundles', async (req, res) => {
   try {
     const bundlesResult = await db.query('SELECT * FROM bundles ORDER BY id ASC');
@@ -301,7 +312,7 @@ router.get('/bundles', async (req, res) => {
       const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
       return {
         id: bundle.bundle_key,
-        db_id: bundle.id, // ID asli di database untuk keperluan hapus/edit
+        db_id: bundle.id, 
         label: bundle.label,
         name: bundle.name,
         tag: bundle.tag,
@@ -326,14 +337,12 @@ router.get('/bundles', async (req, res) => {
   }
 });
 
-// Tambah paket bundling baru (Khusus Admin)
 router.post('/admin/bundles', async (req, res) => {
   const { bundle_key, label, name, tag, badge, discount_percentage, items } = req.body;
   
   try {
     await db.query('BEGIN');
 
-    // 1. Masukkan data utama bundling
     const bundleQuery = `
       INSERT INTO bundles (bundle_key, label, name, tag, badge, discount_percentage) 
       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;
@@ -349,7 +358,6 @@ router.post('/admin/bundles', async (req, res) => {
     
     const bundleId = bundleRes.rows[0].id;
 
-    // 2. Masukkan item-item ke dalam paket bundling tersebut
     if (items && items.length > 0) {
       for (let item of items) {
         await db.query(
@@ -368,7 +376,6 @@ router.post('/admin/bundles', async (req, res) => {
   }
 });
 
-// Hapus paket bundling (Khusus Admin)
 router.delete('/admin/bundles/:id', async (req, res) => {
   const { id } = req.params;
   try {

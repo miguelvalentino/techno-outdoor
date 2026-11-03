@@ -7,11 +7,9 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Endpoint Tes Koneksi & Database
 app.get('/', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW()');
@@ -25,13 +23,8 @@ app.get('/', async (req, res) => {
   }
 });
 
-// Jalankan Server
 app.listen(PORT, () => {
   console.log(`Server backend aktif di http://localhost:${PORT}`);
 });
-
-// server.js (Tambahkan baris ini)
 const apiRoutes = require('./routes/api');
-
-// Gunakan middleware API
 app.use('/api', apiRoutes);

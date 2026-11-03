@@ -295,7 +295,6 @@ export const AdminPage = () => {
           </div>
         </div>
       ) : (
-        /* KELOLA BUNDLING TAB */
         <div className="fade-in">
           <form onSubmit={handleBundleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-10">
             <h2 className="text-xl font-bold text-gray-800 mb-4">Buat Paket Bundling / Promo Baru</h2>

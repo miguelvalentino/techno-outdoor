@@ -38,7 +38,12 @@ export const ProfilePage = () => {
 
   if (!user) return null; 
 
-  const filteredOrders = orders.filter(order => order.order_type === (activeTab === 'pembelian' ? 'beli' : 'sewa'));
+  const filteredOrders = orders.filter(order => {
+    if (activeTab === 'pembelian') return order.order_type === 'beli';
+    if (activeTab === 'penyewaan') return order.order_type === 'sewa';
+    if (activeTab === 'pemandu') return order.order_type === 'booking'; 
+    return false;
+  });
 
   const getCustomerStatusStyle = (status) => {
     switch(status) {
@@ -46,12 +51,16 @@ export const ProfilePage = () => {
       case 'Dikembalikan':
         return 'bg-green-100 text-green-700';
       case 'Dikirim':
+      case 'Guide Terkonfirmasi':
         return 'bg-blue-100 text-blue-700';
       case 'Sedang Disewa':
+      case 'Sedang Mendaki': 
         return 'bg-yellow-100 text-yellow-700 border border-yellow-300';
       case 'Dalam Pengiriman Kembali':
+      case 'Menunggu Konfirmasi Admin': 
         return 'bg-purple-100 text-purple-700 border border-purple-200';
       case 'Dibatalkan':
+      case 'Reschedule/Ditolak':
         return 'bg-red-100 text-red-700';
       default: 
         return 'bg-orange-100 text-orange-700';
@@ -87,6 +96,28 @@ export const ProfilePage = () => {
       alert('Terjadi kesalahan jaringan.');
     }
   };
+
+  const handleCompleteTrip = async (orderId) => {
+    if(!window.confirm("Apakah Anda yakin ingin menyelesaikan perjalanan ini?")) return;
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Selesai' })
+      });
+
+      if (response.ok) {
+        alert('Perjalanan telah diselesaikan. Terima kasih!');
+        fetchOrders(); 
+      } else {
+        alert('Gagal menyelesaikan perjalanan.');
+      }
+    } catch (error) {
+      console.error('Error completing trip:', error);
+      alert('Terjadi kesalahan jaringan.');
+    }
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-10 flex-grow w-full fade-in">
@@ -131,9 +162,15 @@ export const ProfilePage = () => {
         </button>
         <button 
           onClick={() => setActiveTab('penyewaan')}
-          className={`py-3 px-4 font-semibold text-sm whitespace-nowrap border-b-2 transition ${activeTab === 'penyewaan' ? 'border-red-600 text-red-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          className={`py-3 px-4 font-semibold text-sm whitespace-nowrap border-b-2 transition ${activeTab === 'penyewaan' ? 'border-orange-600 text-orange-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
         >
           Riwayat Penyewaan
+        </button>
+        <button 
+          onClick={() => setActiveTab('pemandu')}
+          className={`py-3 px-4 font-semibold text-sm whitespace-nowrap border-b-2 transition ${activeTab === 'pemandu' ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+        >
+          Booking Pemandu
         </button>
       </div>
 
@@ -160,30 +197,84 @@ export const ProfilePage = () => {
                   </div>
                   
                   <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${getCustomerStatusStyle(order.status)}`}>
-                    {order.status}
+                    {order.status || (order.order_type === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Menunggu Pembayaran')}
                   </span>
                 </div>
                 
                 <div className="p-5 flex flex-col gap-4">
                   {order.items.map((item, idx) => (
-                    <div key={idx} className="flex gap-4 items-center">
+                    <div key={idx} className="flex flex-col sm:flex-row gap-4">
                       <div className="h-16 w-16 bg-gray-100 rounded-xl overflow-hidden flex-shrink-0 border border-gray-200">
                         {item.image_url ? (
-                          <img src={item.image_url} alt="Produk" className="h-full w-full object-cover" />
+                          <img src={item.image_url} alt={item.name} className="h-full w-full object-cover" />
                         ) : (
                           <i className="fa-solid fa-image h-full w-full flex items-center justify-center text-gray-400"></i>
                         )}
                       </div>
-                      <div className="flex-grow min-w-0">
-                        <h4 className="font-bold text-gray-800 text-sm truncate">{item.name || 'Paket / Item Khusus'}</h4>
-                        <p className="text-xs text-gray-500">{item.quantity} barang x Rp {Number(item.price_at_time).toLocaleString('id-ID')}</p>
+                      
+                      <div className="flex-grow min-w-0 flex flex-col justify-center">
+                         <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded w-max ${
+                          order.order_type === 'sewa' ? 'bg-orange-50 text-orange-700' : 
+                          order.order_type === 'booking' ? 'bg-blue-50 text-blue-700' : 
+                          'bg-brand-50 text-brand-700'
+                        }`}>
+                          {order.order_type === 'sewa' ? 'Sewa Alat' : order.order_type === 'booking' ? 'Jasa Pemandu' : 'Beli Alat'}
+                        </span>
+                        <h4 className="font-bold text-gray-800 text-sm truncate mt-1">{item.name || 'Item Khusus'}</h4>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {item.quantity || item.qty} {order.order_type === 'booking' ? 'Paket' : 'Barang'} x Rp {Number(item.price_at_time || item.price).toLocaleString('id-ID')}
+                        </p>
                       </div>
+
+                      {/* Kondisional UI untuk Booking Guide */}
+                      {order.order_type === 'booking' && (
+                        <div className="sm:w-1/3 flex flex-col justify-center sm:pl-4 sm:border-l border-gray-100 mt-2 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-t-0">
+                          {(order.status === 'Guide Terkonfirmasi' || order.status === 'Sedang Mendaki') ? (
+                            <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col h-full justify-between">
+                              <p className="text-[10px] text-blue-700 font-bold mb-2 flex items-center gap-1">
+                                <i className="fa-solid fa-circle-check"></i> Jadwal Dikonfirmasi!
+                              </p>
+                              <a 
+                                href={`https://wa.me/6281234567890?text=Halo, saya ingin koordinasi pesanan #ORD-${order.id}`} 
+                                target="_blank" 
+                                rel="noreferrer"
+                                className="w-full bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 rounded-lg transition flex items-center justify-center gap-2"
+                              >
+                                <i className="fa-brands fa-whatsapp text-sm"></i> Hubungi Guide
+                              </a>
+                            </div>
+                          ) : (order.status === 'Selesai') ? (
+                             <div className="bg-green-50 p-3 rounded-xl border border-green-100 flex items-center gap-2">
+                                <i className="fa-solid fa-flag-checkered text-green-500 text-lg"></i>
+                                <div>
+                                  <p className="text-[10px] text-green-700 font-bold uppercase">Trip Selesai</p>
+                                  <p className="text-[10px] text-green-600 mt-0.5">Terima kasih telah menggunakan jasa kami.</p>
+                                </div>
+                             </div>
+                          ) : (order.status === 'Reschedule/Ditolak' || order.status === 'Dibatalkan') ? (
+                             <div className="bg-red-50 p-3 rounded-xl border border-red-100 flex items-center gap-2">
+                                <i className="fa-solid fa-circle-xmark text-red-500 text-lg"></i>
+                                <div>
+                                  <p className="text-[10px] text-red-700 font-bold uppercase">Tidak Tersedia</p>
+                                  <p className="text-[10px] text-red-600 mt-0.5">Silakan hubungi admin untuk refund/reschedule.</p>
+                                </div>
+                             </div>
+                          ) : (
+                            <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 flex items-center gap-3">
+                              <i className="fa-solid fa-clock-rotate-left text-gray-400 text-xl"></i>
+                              <div>
+                                <p className="text-[10px] text-gray-600 font-bold uppercase">Menunggu Konfirmasi</p>
+                                <p className="text-[10px] text-gray-500 leading-tight mt-0.5">Admin sedang memastikan jadwal guide ini.</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
 
-                  {/* Menampilkan Resi Pengembalian Jika Sudah Diisi */}
-                  {order.return_resi && (
-                    <div className="bg-purple-50 border border-purple-200 p-3 rounded-xl flex items-center justify-between text-xs">
+                  {order.order_type === 'sewa' && order.return_resi && (
+                    <div className="bg-purple-50 border border-purple-200 p-3 rounded-xl flex items-center justify-between text-xs mt-2">
                       <span className="font-bold text-purple-700"><i className="fa-solid fa-truck-fast mr-1"></i> Resi Pengembalian:</span>
                       <span className="font-mono bg-white px-2 py-1 rounded border border-purple-200 text-purple-900 font-bold">{order.return_resi}</span>
                     </div>
@@ -196,8 +287,7 @@ export const ProfilePage = () => {
                     <span className="text-lg font-black text-gray-900">Rp {Number(order.total_price).toLocaleString('id-ID')}</span>
                   </div>
                   
-                  {/* TOMBOL & KOTAK INPUT RESI KETIKA STATUS "Sedang Disewa" */}
-                  {order.status === 'Sedang Disewa' && (
+                  {order.order_type === 'sewa' && order.status === 'Sedang Disewa' && (
                     <div className="w-full sm:w-auto">
                       {!returnInputActive[order.id] ? (
                         <button 
@@ -233,6 +323,18 @@ export const ProfilePage = () => {
                       )}
                     </div>
                   )}
+
+                  {order.order_type === 'booking' && order.status === 'Sedang Mendaki' && (
+                     <div className="w-full sm:w-auto">
+                        <button 
+                          onClick={() => handleCompleteTrip(order.id)}
+                          className="w-full sm:w-auto bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition flex items-center justify-center gap-2"
+                        >
+                          <i className="fa-solid fa-flag-checkered"></i> Konfirmasi Trip Selesai
+                        </button>
+                     </div>
+                  )}
+
                 </div>
               </div>
             ))}

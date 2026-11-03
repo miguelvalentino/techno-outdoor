@@ -4,7 +4,6 @@ import { useCart } from '../context/CartContext';
 export const ToastNotification = () => {
   const { toast } = useCart();
 
-  // Gunakan tanda tanya (?) agar aman jika toast bernilai undefined
   if (!toast?.show) return null;
 
   return (
@@ -14,7 +13,7 @@ export const ToastNotification = () => {
           <i className="fa-solid fa-check text-green-600 text-sm"></i>
         </div>
         <p className="text-xs font-bold text-gray-800 whitespace-nowrap">
-          Produk berhasil ditambahkan
+           Berhasil ditambahkan
         </p>
       </div>
     </div>

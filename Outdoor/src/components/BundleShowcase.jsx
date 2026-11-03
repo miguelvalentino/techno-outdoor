@@ -76,7 +76,7 @@ export const BundleShowcase = ({ type = 'beli', rentDays = 1 }) => {
       <div 
         className={`rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden flex flex-col justify-between transition-all duration-500 ${
           type === 'sewa' 
-            ? 'bg-gradient-to-br from-orange-400 to-orange-600' // WARNA BARU: Orange cerah yang segar
+            ? 'bg-gradient-to-br from-orange-400 to-orange-600' 
             : 'bg-gradient-to-br from-brand-950 via-brand-900 to-brand-800'
         }`}
       >

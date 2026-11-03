@@ -27,6 +27,13 @@ export const CartModal = ({ isOpen, onClose }) => {
     }
     
     setIsProcessing(true);
+
+    let currentOrderType = 'beli';
+    if (cartItems.some(item => item.type === 'booking')) {
+      currentOrderType = 'booking';
+    } else if (cartItems.some(item => item.type === 'sewa')) {
+      currentOrderType = 'sewa';
+    }
     
     try {
       const response = await fetch('http://localhost:5000/api/orders', {
@@ -35,6 +42,7 @@ export const CartModal = ({ isOpen, onClose }) => {
         body: JSON.stringify({
           customer_id: user.id,
           total_price: grandTotal,
+          order_type: currentOrderType,
           items: cartItems
         })
       });
@@ -133,7 +141,6 @@ export const CartModal = ({ isOpen, onClose }) => {
                 </div>
                 
                 <div className="flex items-center justify-between w-full sm:w-auto gap-4 flex-shrink-0">
-                  {/* TOMBOL PENGATUR KUANTITAS DENGAN VALIDASI STOK */}
                   <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
                     <button 
                       onClick={() => updateQuantity(item.id, item.type, item.qty - 1, item.stock)}
