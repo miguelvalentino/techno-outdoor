@@ -143,11 +143,11 @@ export const RentSection = () => {
 
       <BundleShowcase type="sewa" rentDays={rentDays} />
 
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+      <div className="flex flex-col gap-4 mb-6">
         <h3 className="text-xl font-bold text-gray-800">Daftar Alat Satuan Sewa</h3>
-        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+        <div className="flex flex-col sm:flex-row gap-2">
           <form
-            className="flex flex-1 sm:w-64"
+            className="flex flex-1 sm:max-w-md"
             onSubmit={event => {
               event.preventDefault();
               setSearchTerm(searchInput);
