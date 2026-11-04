@@ -415,6 +415,59 @@ router.post('/admin/bundles', async (req, res) => {
   }
 });
 
+router.put('/admin/bundles/:id', async (req, res) => {
+  const { id } = req.params;
+  const { bundle_key, label, name, tag, badge, discount_percentage, type, items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Paket harus memiliki minimal satu item.' });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const bundleResult = await client.query(
+      `UPDATE bundles
+       SET bundle_key = $1, label = $2, name = $3, tag = $4, badge = $5,
+           discount_percentage = $6, type = $7
+       WHERE id = $8
+       RETURNING id`,
+      [
+        bundle_key || 'paket-' + Date.now(),
+        label || 'PAKET HEMAT',
+        name,
+        tag || '',
+        badge || '',
+        Number(discount_percentage) || 0,
+        type || 'beli',
+        id
+      ]
+    );
+
+    if (bundleResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Paket bundling tidak ditemukan.' });
+    }
+
+    await client.query('DELETE FROM bundle_items WHERE bundle_id = $1', [id]);
+    for (const item of items) {
+      await client.query(
+        'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, icon) VALUES ($1, $2, $3, $4, $5)',
+        [id, item.name, item.desc || '', Number(item.price) || 0, item.icon || 'fa-check']
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Paket bundling berhasil diperbarui.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error update bundle:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui paket bundling.' });
+  } finally {
+    client.release();
+  }
+});
+
 router.delete('/admin/bundles/:id', async (req, res) => {
   const { id } = req.params;
   try {
