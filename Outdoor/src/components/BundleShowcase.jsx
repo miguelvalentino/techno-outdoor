@@ -9,7 +9,7 @@ export const BundleShowcase = ({ type = 'beli', rentDays = 1 }) => {
   const { addToCart } = useCart();
 
   useEffect(() => {
-    fetch(`http://localhost:5000/api/bundles?type=${type}`)
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/bundles?type=${type}`)
       .then((res) => res.json())
       .then((data) => {
         setBundles(Array.isArray(data) ? data : []);

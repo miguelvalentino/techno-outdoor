@@ -103,22 +103,22 @@ export const AdminPage = () => {
   }, [user, navigate]);
 
   const fetchData = () => {
-    fetch('http://localhost:5000/api/products')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/products`)
       .then(res => res.json())
       .then(data => setProducts(Array.isArray(data) ? data : []))
       .catch(err => console.error(err));
       
-    fetch('http://localhost:5000/api/admin/stats')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/stats`)
       .then(res => res.json())
       .then(data => setStats(data))
       .catch(err => console.error('Gagal memuat statistik:', err));
 
-    fetch('http://localhost:5000/api/bundles')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/bundles`)
       .then(res => res.json())
       .then(data => setBundles(Array.isArray(data) ? data : []))
       .catch(err => console.error('Gagal memuat bundling:', err));
 
-    fetch('http://localhost:5000/api/guides')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/guides`)
       .then(res => res.json())
       .then(data => {
         const list = Array.isArray(data) ? data : [];
@@ -141,7 +141,7 @@ export const AdminPage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const url = isEditing ? `http://localhost:5000/api/admin/products/${editId}` : 'http://localhost:5000/api/admin/products';
+      const url = isEditing ? `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/products/${editId}` : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/products`;
       const method = isEditing ? 'PUT' : 'POST';
       const response = await fetch(url, {
         method: method,
@@ -181,7 +181,7 @@ export const AdminPage = () => {
     const currentVal = Number(product[field] ?? 0);
     const nextVal = Math.max(0, currentVal + delta);
     try {
-      const response = await fetch(`http://localhost:5000/api/admin/products/${product.id}/stock`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/products/${product.id}/stock`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [field]: nextVal })
@@ -196,7 +196,7 @@ export const AdminPage = () => {
 
   const handleDelete = async (id) => {
     if (confirm('Yakin ingin menghapus produk ini?')) {
-      await fetch(`http://localhost:5000/api/admin/products/${id}`, { method: 'DELETE' });
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/products/${id}`, { method: 'DELETE' });
       fetchData();
     }
   };
@@ -226,7 +226,7 @@ export const AdminPage = () => {
         items: bundleItems
       };
 
-      const response = await fetch('http://localhost:5000/api/admin/bundles', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/bundles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -250,7 +250,7 @@ export const AdminPage = () => {
 
   const handleDeleteBundle = async (id) => {
     if (confirm('Yakin ingin menghapus paket bundling ini?')) {
-      await fetch(`http://localhost:5000/api/admin/bundles/${id}`, { method: 'DELETE' });
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/bundles/${id}`, { method: 'DELETE' });
       fetchData();
     }
   };
@@ -322,8 +322,8 @@ export const AdminPage = () => {
     e.preventDefault();
     try {
       const url = isEditingGuide
-        ? `http://localhost:5000/api/admin/guides/${editGuideId}`
-        : 'http://localhost:5000/api/admin/guides';
+        ? `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/guides/${editGuideId}`
+        : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/guides`;
       const method = isEditingGuide ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
@@ -383,7 +383,7 @@ export const AdminPage = () => {
 
   const handleDeleteGuide = async (id) => {
     if (confirm('Yakin ingin menghapus pemandu ini dari sistem?')) {
-      await fetch(`http://localhost:5000/api/admin/guides/${id}`, { method: 'DELETE' });
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/guides/${id}`, { method: 'DELETE' });
       fetchData();
     }
   };
@@ -398,7 +398,7 @@ export const AdminPage = () => {
     }
 
     try {
-      const response = await fetch(`http://localhost:5000/api/admin/guides/${scheduleModalGuide.id}/schedules`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/guides/${scheduleModalGuide.id}/schedules`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -420,7 +420,7 @@ export const AdminPage = () => {
   const handleDeleteGuideSchedule = async (scheduleId) => {
     if (!confirm('Hapus tanda booking tanggal ini dari kalender pemandu?')) return;
     try {
-      const response = await fetch(`http://localhost:5000/api/admin/guides/schedules/${scheduleId}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/guides/schedules/${scheduleId}`, {
         method: 'DELETE'
       });
       if (response.ok) {

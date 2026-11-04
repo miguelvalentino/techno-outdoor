@@ -52,7 +52,7 @@ export const GuideSection = () => {
   }, [startDate, endDate]);
 
   const fetchGuides = () => {
-    fetch('http://localhost:5000/api/guides')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/guides`)
       .then((res) => res.json())
       .then((data) => {
         setGuides(Array.isArray(data) ? data : []);

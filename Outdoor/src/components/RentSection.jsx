@@ -47,7 +47,7 @@ export const RentSection = () => {
   }, [startDate, endDate]);
 
   const fetchRentProducts = () => {
-    fetch('http://localhost:5000/api/products')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/products`)
       .then(res => res.json())
       .then(data => {
         const rentableItems = Array.isArray(data) ? data.filter(product => product.is_rentable === true) : [];

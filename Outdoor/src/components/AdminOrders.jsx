@@ -15,7 +15,7 @@ export const AdminOrders = () => {
   const [submittingInspect, setSubmittingInspect] = useState(false);
 
   const fetchAllOrders = () => {
-    fetch('http://localhost:5000/api/orders/all')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/all`)
       .then(res => res.json())
       .then(data => {
         setOrders(Array.isArray(data) ? data : []);
@@ -56,7 +56,7 @@ export const AdminOrders = () => {
     }
 
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${order.id}/status`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${order.id}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
@@ -79,7 +79,7 @@ export const AdminOrders = () => {
     if (!inspectModalOrder) return;
     setSubmittingInspect(true);
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${inspectModalOrder.id}/inspect-return`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${inspectModalOrder.id}/inspect-return`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -107,7 +107,7 @@ export const AdminOrders = () => {
   const handleMarkPenaltyPaidByAdmin = async (orderId) => {
     if (!window.confirm(`Tandai tagihan denda pada pesanan #ORD-${orderId} sebagai LUNAS?`)) return;
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/penalty-paid`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}/penalty-paid`, {
         method: 'PUT'
       });
       if (response.ok) {
