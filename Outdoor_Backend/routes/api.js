@@ -4,6 +4,59 @@ const router = express.Router();
 const db = require('../db');
 const snap = require('../midtrans');
 
+const DEFAULT_WORKING_DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
+let guideTablesInitialized = false;
+const ensureGuideTables = async () => {
+  if (guideTablesInitialized) return;
+  try {
+    await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
+    await db.query("ALTER TABLE guides ADD COLUMN IF NOT EXISTS working_days TEXT[] DEFAULT ARRAY['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu']");
+    await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS guide_id INT');
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS guide_reviews (
+        id SERIAL PRIMARY KEY,
+        order_id INT,
+        guide_id INT REFERENCES guides(id) ON DELETE CASCADE,
+        customer_id INT REFERENCES users(id) ON DELETE CASCADE,
+        customer_name VARCHAR(100),
+        rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS guide_schedules (
+        id SERIAL PRIMARY KEY,
+        guide_id INT REFERENCES guides(id) ON DELETE CASCADE,
+        order_id INT,
+        customer_name VARCHAR(100),
+        destination VARCHAR(150),
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        note TEXT,
+        status VARCHAR(50) DEFAULT 'Terjadwal',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    guideTablesInitialized = true;
+  } catch (err) {
+    console.error('Error initializing guide tables:', err.message);
+  }
+};
+
+// Helper untuk mengekstrak tanggal DD/MM/YYYY s/d DD/MM/YYYY dari nama item order
+const parseDateRangeFromItemName = (itemName) => {
+  if (!itemName) return null;
+  const match = itemName.match(/(\d{2})\/(\d{2})\/(\d{4})\s*s\/d\s*(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!match) return null;
+  const [, d1, m1, y1, d2, m2, y2] = match;
+  return {
+    start_date: `${y1}-${m1}-${d1}`,
+    end_date: `${y2}-${m2}-${d2}`
+  };
+};
+
 // --- 0. PAYMENT CONFIG & WEBHOOK ---
 router.get('/payment/client-key', (req, res) => {
   res.json({ clientKey: process.env.MIDTRANS_CLIENT_KEY || '' });
@@ -11,6 +64,7 @@ router.get('/payment/client-key', (req, res) => {
 
 router.post('/payment/notification', async (req, res) => {
   try {
+    await ensureGuideTables();
     const statusResponse = await snap.transaction.notification(req.body);
     const orderIdRaw = statusResponse.order_id;
     const orderId = orderIdRaw ? orderIdRaw.split('-')[1] : null;
@@ -32,6 +86,7 @@ router.post('/payment/notification', async (req, res) => {
 
     if (orderId) {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, orderId]);
+      await db.query('UPDATE guide_schedules SET status = $1 WHERE order_id = $2', [newStatus, orderId]);
     }
 
     res.status(200).json({ status: 'OK' });
@@ -148,11 +203,83 @@ router.delete('/admin/bundles/:id', async (req, res) => {
 });
 
 
-// --- 2. ENDPOINT GUIDE & BOOKING ---
+// --- 2. ENDPOINT GUIDE, JADWAL KALENDER & ULASAN ---
 router.get('/guides', async (req, res) => {
   try {
+    await ensureGuideTables();
     const result = await db.query('SELECT * FROM guides ORDER BY rating DESC, id ASC');
-    res.json(result.rows);
+    const guides = result.rows;
+
+    // Ambil semua ulasan guide
+    const reviewsRes = await db.query('SELECT * FROM guide_reviews ORDER BY created_at DESC');
+    const allReviews = reviewsRes.rows;
+
+    // PENTING: Hanya ambil jadwal yang SUDAH DIBAYAR / AKTIF (bukan 'Menunggu Pembayaran' atau 'Dibatalkan')
+    const schedulesRes = await db.query(`
+      SELECT gs.id, gs.guide_id, gs.order_id, gs.customer_name, gs.destination,
+             TO_CHAR(gs.start_date, 'YYYY-MM-DD') as start_date,
+             TO_CHAR(gs.end_date, 'YYYY-MM-DD') as end_date,
+             gs.note,
+             COALESCE(o.status, gs.status) as status
+      FROM guide_schedules gs
+      LEFT JOIN orders o ON gs.order_id = o.id
+      WHERE COALESCE(o.status, gs.status) NOT IN ('Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak')
+      ORDER BY gs.start_date ASC
+    `);
+    const allSchedules = [...schedulesRes.rows];
+
+    // Ambil juga dari order_items yang bertipe booking & SUDAH DIBAYAR (jika ada order lama yang belum masuk guide_schedules)
+    const bookingOrdersRes = await db.query(`
+      SELECT o.id as order_id, o.status, u.name as customer_name,
+             COALESCE(oi.guide_id, oi.product_id) as guide_id, oi.item_name
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.id
+      LEFT JOIN users u ON o.customer_id = u.id
+      WHERE o.order_type = 'booking'
+        AND o.status NOT IN ('Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak')
+    `);
+
+    for (const row of bookingOrdersRes.rows) {
+      if (!row.guide_id) continue;
+      const alreadyExists = allSchedules.some(
+        s => s.order_id && Number(s.order_id) === Number(row.order_id) && Number(s.guide_id) === Number(row.guide_id)
+      );
+      if (!alreadyExists) {
+        const parsed = parseDateRangeFromItemName(row.item_name);
+        if (parsed) {
+          allSchedules.push({
+            id: `ord-${row.order_id}`,
+            guide_id: row.guide_id,
+            order_id: row.order_id,
+            customer_name: row.customer_name || 'Pelanggan',
+            destination: 'Pendakian Gunung',
+            start_date: parsed.start_date,
+            end_date: parsed.end_date,
+            note: `Order #ORD-${row.order_id}`,
+            status: row.status || 'Diproses'
+          });
+        }
+      }
+    }
+
+    const enrichedGuides = guides.map(g => {
+      const gReviews = allReviews.filter(r => Number(r.guide_id) === Number(g.id));
+      const gSchedules = allSchedules.filter(s => Number(s.guide_id) === Number(g.id));
+      const avgRating = gReviews.length > 0
+        ? (gReviews.reduce((sum, r) => sum + Number(r.rating), 0) / gReviews.length).toFixed(1)
+        : Number(g.rating || 5.0).toFixed(1);
+
+      return {
+        ...g,
+        rating: avgRating,
+        review_count: gReviews.length,
+        reviews: gReviews,
+        working_days: Array.isArray(g.working_days) && g.working_days.length > 0 ? g.working_days : DEFAULT_WORKING_DAYS,
+        schedules: gSchedules
+      };
+    });
+
+    res.json(enrichedGuides);
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal mengambil data guide' });
@@ -160,9 +287,9 @@ router.get('/guides', async (req, res) => {
 });
 
 router.post('/admin/guides', async (req, res) => {
-  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url } = req.body;
+  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, skills, working_days, avatar_url } = req.body;
   try {
-    await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
+    await ensureGuideTables();
 
     const parsedSkills = Array.isArray(skills)
       ? skills.map(s => String(s).trim()).filter(Boolean)
@@ -170,9 +297,13 @@ router.post('/admin/guides', async (req, res) => {
         ? skills.split(',').map(s => s.trim()).filter(Boolean)
         : [];
 
+    const parsedWorkingDays = Array.isArray(working_days) && working_days.length > 0
+      ? working_days
+      : DEFAULT_WORKING_DAYS;
+
     const query = `
-      INSERT INTO guides (name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;
+      INSERT INTO guides (name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, working_days, avatar_url)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10) RETURNING *;
     `;
     const newGuide = await db.query(query, [
       name,
@@ -182,8 +313,8 @@ router.post('/admin/guides', async (req, res) => {
       Number(rating) || 5.0,
       Number(total_trips) || 0,
       Number(experience_years) || 1,
-      verified !== undefined ? Boolean(verified) : true,
       parsedSkills,
+      parsedWorkingDays,
       avatar_url || ''
     ]);
     res.status(201).json({ message: 'Pemandu berhasil ditambahkan!', guide: newGuide.rows[0] });
@@ -195,9 +326,9 @@ router.post('/admin/guides', async (req, res) => {
 
 router.put('/admin/guides/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url } = req.body;
+  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, skills, working_days, avatar_url } = req.body;
   try {
-    await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
+    await ensureGuideTables();
 
     const parsedSkills = Array.isArray(skills)
       ? skills.map(s => String(s).trim()).filter(Boolean)
@@ -205,10 +336,14 @@ router.put('/admin/guides/:id', async (req, res) => {
         ? skills.split(',').map(s => s.trim()).filter(Boolean)
         : [];
 
+    const parsedWorkingDays = Array.isArray(working_days) && working_days.length > 0
+      ? working_days
+      : DEFAULT_WORKING_DAYS;
+
     const query = `
       UPDATE guides
       SET name = $1, mountain_region = $2, description = $3, price_per_day = $4, rating = $5, total_trips = $6,
-          experience_years = $7, verified = $8, skills = $9, avatar_url = $10
+          experience_years = $7, skills = $8, working_days = $9, avatar_url = $10
       WHERE id = $11 RETURNING *;
     `;
     const updatedGuide = await db.query(query, [
@@ -219,8 +354,8 @@ router.put('/admin/guides/:id', async (req, res) => {
       Number(rating) || 5.0,
       Number(total_trips) || 0,
       Number(experience_years) || 1,
-      verified !== undefined ? Boolean(verified) : true,
       parsedSkills,
+      parsedWorkingDays,
       avatar_url || '',
       id
     ]);
@@ -231,21 +366,6 @@ router.put('/admin/guides/:id', async (req, res) => {
   }
 });
 
-router.patch('/admin/guides/:id/verify', async (req, res) => {
-  const { id } = req.params;
-  const { verified } = req.body;
-  try {
-    const updated = await db.query(
-      'UPDATE guides SET verified = $1 WHERE id = $2 RETURNING *',
-      [Boolean(verified), id]
-    );
-    res.json({ message: 'Status verifikasi diperbarui', guide: updated.rows[0] });
-  } catch (err) {
-    console.error('Error verify guide:', err.message);
-    res.status(500).json({ error: 'Gagal memperbarui status verifikasi' });
-  }
-});
-
 router.delete('/admin/guides/:id', async (req, res) => {
   try {
     await db.query('DELETE FROM guides WHERE id = $1', [req.params.id]);
@@ -253,6 +373,93 @@ router.delete('/admin/guides/:id', async (req, res) => {
   } catch (err) {
     console.error('Error delete guide:', err.message);
     res.status(500).json({ error: 'Gagal menghapus pemandu' });
+  }
+});
+
+// Endpoint Admin: Menambah jadwal booking / blokir tanggal manual ke kalender guide
+router.post('/admin/guides/:id/schedules', async (req, res) => {
+  const { id } = req.params;
+  const { start_date, end_date, destination, customer_name, note } = req.body;
+  try {
+    await ensureGuideTables();
+    const result = await db.query(
+      `INSERT INTO guide_schedules (guide_id, customer_name, destination, start_date, end_date, note, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Terjadwal') RETURNING *`,
+      [id, customer_name || 'Jadwal Admin', destination || 'Pendakian', start_date, end_date || start_date, note || '']
+    );
+    res.status(201).json({ message: 'Jadwal berhasil ditambahkan ke kalender!', schedule: result.rows[0] });
+  } catch (err) {
+    console.error('Error add guide schedule:', err.message);
+    res.status(500).json({ error: 'Gagal menambahkan jadwal pemandu' });
+  }
+});
+
+router.delete('/admin/guides/schedules/:scheduleId', async (req, res) => {
+  const { scheduleId } = req.params;
+  try {
+    await ensureGuideTables();
+    await db.query('DELETE FROM guide_schedules WHERE id = $1', [scheduleId]);
+    res.json({ message: 'Jadwal berhasil dihapus dari kalender' });
+  } catch (err) {
+    console.error('Error delete schedule:', err.message);
+    res.status(500).json({ error: 'Gagal menghapus jadwal' });
+  }
+});
+
+// Endpoint Pelanggan: Memberikan Rating & Ulasan kepada Guide yang sudah disewa & dibayar
+router.post('/guides/:id/reviews', async (req, res) => {
+  const { id } = req.params;
+  const { order_id, customer_id, customer_name, rating, comment } = req.body;
+  try {
+    await ensureGuideTables();
+    const numericRating = Math.min(5, Math.max(1, Number(rating) || 5));
+
+    if (order_id) {
+      // Pastikan pesanan benar-benar ada dan sudah dibayar (bukan Menunggu Pembayaran / Dibatalkan)
+      const orderCheck = await db.query('SELECT id, customer_id, status FROM orders WHERE id = $1', [order_id]);
+      if (orderCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Data pesanan tidak ditemukan.' });
+      }
+      const orderData = orderCheck.rows[0];
+      if (orderData.status === 'Menunggu Pembayaran' || orderData.status === 'Dibatalkan' || orderData.status === 'Reschedule/Ditolak') {
+        return res.status(400).json({ error: 'Ulasan hanya dapat diberikan setelah pembayaran pesanan berhasil.' });
+      }
+
+      // Cek apakah order_id ini sudah pernah memberikan ulasan untuk guide ini
+      const existing = await db.query(
+        'SELECT id FROM guide_reviews WHERE order_id = $1 AND guide_id = $2',
+        [order_id, id]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: 'Anda sudah memberikan ulasan untuk pemandu pada pesanan ini.' });
+      }
+    }
+
+    const insertRes = await db.query(
+      `INSERT INTO guide_reviews (order_id, guide_id, customer_id, customer_name, rating, comment)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [order_id || null, id, customer_id || null, customer_name || 'Pendaki', numericRating, comment || '']
+    );
+
+    // Hitung ulang rata-rata rating pemandu dan perbarui tabel guides
+    const avgRes = await db.query(
+      'SELECT AVG(rating) as avg_rating, COUNT(*) as total_reviews FROM guide_reviews WHERE guide_id = $1',
+      [id]
+    );
+    const newAvg = Number(avgRes.rows[0].avg_rating || numericRating).toFixed(2);
+    await db.query(
+      'UPDATE guides SET rating = $1, total_trips = GREATEST(COALESCE(total_trips, 0), $2) WHERE id = $3',
+      [newAvg, Number(avgRes.rows[0].total_reviews || 1), id]
+    );
+
+    res.status(201).json({
+      message: 'Terima kasih! Rating dan ulasan Anda berhasil disimpan.',
+      review: insertRes.rows[0],
+      new_rating: newAvg
+    });
+  } catch (err) {
+    console.error('Error submit guide review:', err.message);
+    res.status(500).json({ error: 'Gagal menyimpan ulasan: ' + err.message });
   }
 });
 
@@ -306,9 +513,42 @@ router.post('/auth/login', async (req, res) => {
 router.post('/orders', async (req, res) => {
   const { customer_id, total_price, items, order_type } = req.body;
   try {
+    await ensureGuideTables();
     const finalOrderType = order_type || (items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli');
     const hasMidtrans = Boolean(process.env.MIDTRANS_SERVER_KEY);
     const initialStatus = hasMidtrans ? 'Menunggu Pembayaran' : (finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses');
+
+    // Validasi anti double-booking sebelum membuat pesanan guide
+    for (let item of items) {
+      const isGuideItem = item.type === 'booking' || finalOrderType === 'booking' || (typeof item.id === 'string' && item.id.startsWith('guide-'));
+      if (isGuideItem) {
+        let gId = item.guide_id ? Number(item.guide_id) : null;
+        if (!gId && typeof item.id === 'string' && item.id.startsWith('guide-')) {
+          const matchId = item.id.match(/^guide-(\d+)/);
+          gId = matchId ? parseInt(matchId[1], 10) : null;
+        }
+        const parsedRange = (item.start_date && item.end_date)
+          ? { start_date: item.start_date, end_date: item.end_date }
+          : parseDateRangeFromItemName(item.name);
+
+        if (gId && parsedRange) {
+          const conflictRes = await db.query(
+            `SELECT gs.id FROM guide_schedules gs
+             LEFT JOIN orders o ON gs.order_id = o.id
+             WHERE gs.guide_id = $1
+               AND COALESCE(o.status, gs.status) NOT IN ('Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak')
+               AND gs.start_date <= $3::date AND gs.end_date >= $2::date
+             LIMIT 1`,
+            [gId, parsedRange.start_date, parsedRange.end_date]
+          );
+          if (conflictRes.rows.length > 0) {
+            return res.status(400).json({
+              error: 'Maaf, pemandu ini sudah dibooking pada tanggal tersebut. Silakan pilih tanggal lain di kalender.'
+            });
+          }
+        }
+      }
+    }
 
     const newOrder = await db.query(
       'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
@@ -316,12 +556,62 @@ router.post('/orders', async (req, res) => {
     );
     const orderId = newOrder.rows[0].id;
 
+    const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [customer_id]);
+    const customer = userRes.rows[0] || {};
+
     for (let item of items) {
-      const productId = typeof item.id === 'string' ? parseInt(item.id.replace('guide-', '')) || null : item.id;
+      const isGuideItem = item.type === 'booking' || finalOrderType === 'booking' || (typeof item.id === 'string' && item.id.startsWith('guide-'));
+      let productId = null;
+      let guideId = null;
+
+      if (isGuideItem) {
+        if (item.guide_id) {
+          guideId = Number(item.guide_id);
+        } else if (typeof item.id === 'string' && item.id.startsWith('guide-')) {
+          const matchId = item.id.match(/^guide-(\d+)/);
+          guideId = matchId ? parseInt(matchId[1], 10) : null;
+        } else if (typeof item.id === 'number') {
+          guideId = item.id;
+        }
+        // PENTING: productId dibiarkan NULL untuk item guide agar tidak melanggar Foreign Key ke tabel products!
+        productId = null;
+      } else if (typeof item.id === 'number') {
+        productId = item.id;
+      }
+
+      // Hindari menyimpan string base64 raksasa di kolom item_image jika sudah ada relasi guide_id / product_id
+      const safeItemImage = item.image_url && item.image_url.startsWith('data:image') && guideId
+        ? ''
+        : (item.image_url || '');
+
       await db.query(
-        'INSERT INTO order_items (order_id, product_id, quantity, price_at_time, item_name, item_image, item_type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [orderId, productId, item.qty, item.price, item.name, item.image_url || '', item.type || 'beli']
+        'INSERT INTO order_items (order_id, product_id, guide_id, quantity, price_at_time, item_name, item_image, item_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [orderId, productId, guideId, item.qty || 1, item.price, item.name, safeItemImage, item.type || finalOrderType || 'beli']
       );
+
+      // Catat jadwal ke guide_schedules dengan status awal (jika 'Menunggu Pembayaran', belum memblokir kalender sampai dibayar!)
+      if (isGuideItem && guideId) {
+        const parsedRange = (item.start_date && item.end_date)
+          ? { start_date: item.start_date, end_date: item.end_date }
+          : parseDateRangeFromItemName(item.name);
+
+        if (parsedRange) {
+          await db.query(
+            `INSERT INTO guide_schedules (guide_id, order_id, customer_name, destination, start_date, end_date, note, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              guideId,
+              orderId,
+              customer.name || 'Pelanggan',
+              item.destination || 'Pendakian Gunung',
+              parsedRange.start_date,
+              parsedRange.end_date,
+              `Order #ORD-${orderId}`,
+              initialStatus
+            ]
+          );
+        }
+      }
     }
 
     let snapToken = null;
@@ -329,9 +619,6 @@ router.post('/orders', async (req, res) => {
 
     if (hasMidtrans) {
       try {
-        const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [customer_id]);
-        const customer = userRes.rows[0] || {};
-
         const parameter = {
           transaction_details: {
             order_id: `ORD-${orderId}-${Date.now()}`,
@@ -365,8 +652,8 @@ router.post('/orders', async (req, res) => {
       redirect_url: redirectUrl
     });
   } catch (err) {
-    console.error(err.message);
-    res.status(500).json({ error: 'Gagal memproses pesanan' });
+    console.error('Error create order:', err.message);
+    res.status(500).json({ error: 'Gagal memproses pesanan: ' + err.message });
   }
 });
 
@@ -374,11 +661,34 @@ router.post('/orders', async (req, res) => {
 router.post('/orders/:id/pay', async (req, res) => {
   const { id } = req.params;
   try {
+    await ensureGuideTables();
     const orderRes = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ error: 'Pesanan tidak ditemukan' });
     }
     const order = orderRes.rows[0];
+
+    // Cek apakah tanggal guide pada order ini sudah dibooking dan dibayar orang lain sementara order ini masih pending
+    if (order.order_type === 'booking') {
+      const mySchedules = await db.query('SELECT * FROM guide_schedules WHERE order_id = $1', [order.id]);
+      for (const sch of mySchedules.rows) {
+        const conflictRes = await db.query(
+          `SELECT gs.id FROM guide_schedules gs
+           LEFT JOIN orders o ON gs.order_id = o.id
+           WHERE gs.guide_id = $1
+             AND gs.order_id != $2
+             AND COALESCE(o.status, gs.status) NOT IN ('Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak')
+             AND gs.start_date <= $4::date AND gs.end_date >= $3::date
+           LIMIT 1`,
+          [sch.guide_id, order.id, sch.start_date, sch.end_date]
+        );
+        if (conflictRes.rows.length > 0) {
+          return res.status(400).json({
+            error: 'Maaf, jadwal pemandu pada tanggal tersebut sudah dibooking dan dibayar oleh pengguna lain.'
+          });
+        }
+      }
+    }
 
     const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [order.customer_id]);
     const customer = userRes.rows[0] || {};
@@ -415,17 +725,37 @@ router.post('/orders/:id/pay', async (req, res) => {
 router.get('/orders/user/:userId', async (req, res) => {
   const { userId } = req.params;
   try {
+    await ensureGuideTables();
     const ordersResult = await db.query('SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC', [userId]);
+    const userReviewsRes = await db.query('SELECT * FROM guide_reviews WHERE customer_id = $1', [userId]);
+    const userReviews = userReviewsRes.rows;
+
     const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
       const itemsResult = await db.query(`
-        SELECT oi.quantity, oi.price_at_time, 
-               COALESCE(oi.item_name, p.name) as name, 
-               COALESCE(oi.item_image, p.image_url) as image_url 
+        SELECT oi.product_id,
+               COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) as guide_id,
+               oi.quantity, oi.price_at_time, oi.item_type,
+               COALESCE(oi.item_name, p.name, g.name) as name, 
+               COALESCE(NULLIF(oi.item_image, ''), p.image_url, g.avatar_url) as image_url 
         FROM order_items oi 
         LEFT JOIN products p ON oi.product_id = p.id 
+        LEFT JOIN guides g ON COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) = g.id
         WHERE oi.order_id = $1
       `, [order.id]);
-      return { ...order, items: itemsResult.rows };
+
+      const itemsWithReview = itemsResult.rows.map(item => {
+        const targetGuideId = item.guide_id || item.product_id;
+        const existingReview = userReviews.find(
+          r => Number(r.order_id) === Number(order.id) && Number(r.guide_id) === Number(targetGuideId)
+        );
+        return {
+          ...item,
+          guide_id: targetGuideId,
+          review: existingReview || null
+        };
+      });
+
+      return { ...order, items: itemsWithReview };
     }));
     res.json(fullOrders);
   } catch (err) {
@@ -478,6 +808,7 @@ router.delete('/admin/products/:id', async (req, res) => {
 
 router.get('/orders/all', async (req, res) => {
   try {
+    await ensureGuideTables();
     const query = `
       SELECT o.*, u.name as customer_name, u.email as customer_email 
       FROM orders o 
@@ -488,11 +819,12 @@ router.get('/orders/all', async (req, res) => {
     
     const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
       const itemsResult = await db.query(`
-        SELECT oi.quantity, oi.price_at_time, oi.item_type,
-               COALESCE(oi.item_name, p.name) as name, 
-               COALESCE(oi.item_image, p.image_url) as image_url 
+        SELECT oi.product_id, oi.guide_id, oi.quantity, oi.price_at_time, oi.item_type,
+               COALESCE(oi.item_name, p.name, g.name) as name, 
+               COALESCE(NULLIF(oi.item_image, ''), p.image_url, g.avatar_url) as image_url 
         FROM order_items oi 
         LEFT JOIN products p ON oi.product_id = p.id 
+        LEFT JOIN guides g ON COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) = g.id
         WHERE oi.order_id = $1
       `, [order.id]);
       return { ...order, items: itemsResult.rows };
@@ -507,12 +839,34 @@ router.get('/orders/all', async (req, res) => {
 
 router.put('/orders/:id/status', async (req, res) => {
   try {
+    await ensureGuideTables();
     const { status, return_resi } = req.body;
     if (return_resi !== undefined) {
       await db.query('UPDATE orders SET status = $1, return_resi = $2 WHERE id = $3', [status, return_resi, req.params.id]);
     } else {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, req.params.id]);
     }
+
+    // Sinkronkan status jadwal kalender guide jika order ini adalah booking guide
+    if (status === 'Dibatalkan' || status === 'Reschedule/Ditolak') {
+      await db.query("UPDATE guide_schedules SET status = 'Dibatalkan' WHERE order_id = $1", [req.params.id]);
+    } else {
+      await db.query('UPDATE guide_schedules SET status = $1 WHERE order_id = $2', [status, req.params.id]);
+    }
+
+    // Jika status Selesai pada order booking, tambah total_trips pada guide terkait
+    if (status === 'Selesai') {
+      const orderItems = await db.query(
+        "SELECT COALESCE(oi.guide_id, oi.product_id) as guide_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.id = $1 AND o.order_type = 'booking'",
+        [req.params.id]
+      );
+      for (const row of orderItems.rows) {
+        if (row.guide_id) {
+          await db.query('UPDATE guides SET total_trips = COALESCE(total_trips, 0) + 1 WHERE id = $1', [row.guide_id]);
+        }
+      }
+    }
+
     res.json({ message: 'Status berhasil diperbarui' });
   } catch (err) {
     console.error(err.message);
@@ -522,6 +876,8 @@ router.put('/orders/:id/status', async (req, res) => {
 
 router.delete('/orders/:id', async (req, res) => {
   try {
+    await ensureGuideTables();
+    await db.query('DELETE FROM guide_schedules WHERE order_id = $1', [req.params.id]);
     await db.query('DELETE FROM orders WHERE id = $1', [req.params.id]);
     res.json({ message: 'Pesanan berhasil dihapus' });
   } catch (err) {

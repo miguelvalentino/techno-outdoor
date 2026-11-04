@@ -56,6 +56,7 @@ export const AdminOrders = () => {
       case 'Dalam Pengiriman Kembali':
       case 'Sedang Mendaki':
       case 'Menunggu Konfirmasi Admin':
+      case 'Diproses':
         return 'bg-purple-50 text-purple-700 border-purple-200';
       case 'Dibatalkan':
       case 'Reschedule/Ditolak':
@@ -195,17 +196,20 @@ export const AdminOrders = () => {
 
                   <td className="p-4 whitespace-nowrap">
                     <select 
-                      value={order.status || (order.order_type === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Menunggu Pembayaran')}
+                      value={order.status || 'Menunggu Pembayaran'}
                       onChange={(e) => handleStatusChange(order.id, e.target.value)}
-                      className={`text-sm font-bold px-3 py-1.5 rounded-lg outline-none border cursor-pointer ${getStatusStyle(order.status || (order.order_type === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Menunggu Pembayaran'))}`}
+                      className={`text-sm font-bold px-3 py-1.5 rounded-lg outline-none border cursor-pointer ${getStatusStyle(order.status || 'Menunggu Pembayaran')}`}
                     >
                       {order.order_type === 'booking' ? (
                         <>
+                           <option value="Menunggu Pembayaran">Menunggu Pembayaran</option>
+                           <option value="Diproses">Diproses (Sudah Dibayar)</option>
                            <option value="Menunggu Konfirmasi Admin">Menunggu Konfirmasi Admin</option>
                            <option value="Guide Terkonfirmasi">Guide Terkonfirmasi</option>
                            <option value="Sedang Mendaki">Sedang Mendaki</option>
                            <option value="Selesai">Selesai</option>
                            <option value="Reschedule/Ditolak">Reschedule/Ditolak</option>
+                           <option value="Dibatalkan">Dibatalkan</option>
                         </>
                       ) : order.order_type === 'sewa' ? (
                         <>
