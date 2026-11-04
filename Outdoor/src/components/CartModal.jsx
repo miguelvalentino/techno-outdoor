@@ -11,7 +11,13 @@ export const CartModal = ({ isOpen, onClose }) => {
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
-  const [newOrderId, setNewOrderId] = useState(null);
+  const [checkoutResult, setCheckoutResult] = useState({
+    title: 'Checkout Berhasil!',
+    message: '',
+    icon: 'fa-solid fa-check-to-slot',
+    iconColor: 'bg-green-100 text-green-500',
+    orderId: null
+  });
 
   if (!isOpen) return null;
 
@@ -50,11 +56,84 @@ export const CartModal = ({ isOpen, onClose }) => {
       const data = await response.json();
 
       if (response.ok) {
-        setNewOrderId(data.order_id);
-        clearCart(); 
-        setIsSuccess(true); 
+        const orderId = data.order_id;
+
+        // Jika Snap Token tersedia dari Midtrans
+        if (data.snap_token && window.snap) {
+          window.snap.pay(data.snap_token, {
+            onSuccess: async function (result) {
+              console.log('Payment success:', result);
+              // Segera perbarui status order menjadi Diproses
+              try {
+                await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ status: 'Diproses' })
+                });
+              } catch (e) {
+                console.error(e);
+              }
+
+              clearCart();
+              setCheckoutResult({
+                title: 'Pembayaran Berhasil!',
+                message: `Terima kasih, ${user?.name}. Pembayaran Anda telah terverifikasi dan pesanan sedang diproses.`,
+                icon: 'fa-solid fa-circle-check',
+                iconColor: 'bg-green-100 text-green-500',
+                orderId: orderId
+              });
+              setIsSuccess(true);
+            },
+            onPending: function (result) {
+              console.log('Payment pending:', result);
+              clearCart();
+              setCheckoutResult({
+                title: 'Menunggu Pembayaran',
+                message: `Tagihan pesanan Anda telah dibuat. Silakan selesaikan pembayaran sesuai metode yang Anda pilih di halaman Profil.`,
+                icon: 'fa-solid fa-clock-rotate-left',
+                iconColor: 'bg-amber-100 text-amber-600',
+                orderId: orderId
+              });
+              setIsSuccess(true);
+            },
+            onError: async function (result) {
+              console.error('Payment error:', result);
+              // Hapus order yang gagal agar tidak menumpuk di database
+              try {
+                await fetch(`http://localhost:5000/api/orders/${orderId}`, { method: 'DELETE' });
+              } catch (e) {
+                console.error(e);
+              }
+              alert('Pembayaran gagal atau ditolak. Produk tetap berada di keranjang Anda.');
+              setIsSuccess(false);
+            },
+            onClose: async function () {
+              console.log('Payment window closed by user');
+              // User membatalkan pembayaran: hapus order yang belum dibayar
+              try {
+                await fetch(`http://localhost:5000/api/orders/${orderId}`, { method: 'DELETE' });
+              } catch (e) {
+                console.error(e);
+              }
+              // JANGAN kosongkan keranjang dan JANGAN munculkan modal sukses
+              setIsSuccess(false);
+              alert('Pembayaran dibatalkan. Produk tetap tersimpan di keranjang Anda.');
+            }
+          });
+        } else {
+          // Fallback jika tidak menggunakan Midtrans
+          clearCart(); 
+          setCheckoutResult({
+            title: 'Checkout Berhasil!',
+            message: `Terima kasih, ${user?.name}. Pesanan Anda sedang diproses.`,
+            icon: 'fa-solid fa-check-to-slot',
+            iconColor: 'bg-green-100 text-green-500',
+            orderId: orderId
+          });
+          setIsSuccess(true); 
+        }
       } else {
-        alert('Gagal memproses pesanan. Silakan coba lagi.');
+        alert(data.error || 'Gagal memproses pesanan. Silakan coba lagi.');
       }
     } catch (error) {
       console.error('Checkout error:', error);
@@ -68,22 +147,21 @@ export const CartModal = ({ isOpen, onClose }) => {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 fade-in">
         <div className="bg-white rounded-3xl w-full max-w-md p-8 text-center shadow-2xl scale-up">
-          <div className="mx-auto w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center text-5xl mb-6 shadow-inner">
-            <i className="fa-solid fa-check-to-slot"></i>
+          <div className={`mx-auto w-24 h-24 rounded-full flex items-center justify-center text-5xl mb-6 shadow-inner ${checkoutResult.iconColor}`}>
+            <i className={checkoutResult.icon}></i>
           </div>
-          <h2 className="text-2xl font-black text-gray-800 mb-2">Checkout Berhasil!</h2>
+          <h2 className="text-2xl font-black text-gray-800 mb-2">{checkoutResult.title}</h2>
           <p className="text-gray-500 text-sm mb-6">
-            Terima kasih, <strong>{user?.name}</strong>. Pesanan Anda sedang diproses.
+            {checkoutResult.message}
           </p>
           <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-8">
             <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mb-1">ID Pesanan Anda</p>
-            <p className="text-xl font-bold text-brand-700">#ORD-{newOrderId}</p>
+            <p className="text-xl font-bold text-brand-700">#ORD-{checkoutResult.orderId}</p>
           </div>
           <div className="flex flex-col gap-3">
             <button 
               onClick={() => {
                 setIsSuccess(false);
-                setNewOrderId(null);
                 onClose();
                 navigate('/profile'); 
               }}
@@ -94,7 +172,6 @@ export const CartModal = ({ isOpen, onClose }) => {
             <button 
               onClick={() => {
                 setIsSuccess(false);
-                setNewOrderId(null);
                 onClose();
               }}
               className="w-full bg-gray-100 text-gray-600 font-bold py-3.5 rounded-xl hover:bg-gray-200 transition"
