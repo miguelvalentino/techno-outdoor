@@ -32,6 +32,7 @@ export const Navbar = () => {
     setIsUserMenuOpen(false);
     navigate('/'); 
   };
+
   return (
     <>
       <nav className="bg-brand-800/95 backdrop-blur text-white shadow-lg sticky top-0 z-40">
@@ -63,11 +64,14 @@ export const Navbar = () => {
                   onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
                   className="flex items-center gap-2 hover:text-brand-100 transition"
                 >
-                  <span className="h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold bg-white/10">
-                    <i className="fa-regular fa-user"></i>
+                  <span className="h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold bg-white/10 overflow-hidden border border-white/20">
+                    {user?.avatar_url ? (
+                      <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+                    ) : (
+                      <i className="fa-regular fa-user"></i>
+                    )}
                   </span>
                   <span className="hidden sm:inline text-sm font-semibold max-w-[100px] truncate">
-                    {/* Tampilkan kata pertama dari nama user jika sudah login, jika belum tampilkan "Akun" */}
                     {user ? user.name.split(' ')[0] : 'Akun'}
                   </span>
                 </button>
@@ -78,9 +82,18 @@ export const Navbar = () => {
                     {/* Jika Sudah Login */}
                     {user ? (
                       <>
-                        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-                          <p className="text-sm font-bold text-gray-900 truncate">{user.name}</p>
-                          <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                        <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-3">
+                          <div className="h-9 w-9 rounded-full bg-brand-100 overflow-hidden flex items-center justify-center flex-shrink-0 border border-brand-200">
+                            {user.avatar_url ? (
+                              <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+                            ) : (
+                              <i className="fa-solid fa-user text-brand-600 text-sm"></i>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-gray-900 truncate">{user.name}</p>
+                            <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                          </div>
                         </div>
                         
                         <Link to="/profile" onClick={() => setIsUserMenuOpen(false)} className="w-full text-left px-4 py-3 hover:bg-brand-50 text-sm flex items-center gap-3 border-b border-gray-100">

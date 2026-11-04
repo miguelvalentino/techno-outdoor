@@ -42,7 +42,7 @@ export const AdminPage = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({
-    name: '', category: 'TENDA', price: '', stock: '', image_url: '', description: '', is_rentable: false, rent_price_per_day: ''
+    name: '', category: 'TENDA', price: '', stock: '', rent_stock: '0', image_url: '', description: '', is_rentable: false, rent_price_per_day: ''
   });
 
   // --- STATE BUNDLING ---
@@ -163,7 +163,8 @@ export const AdminPage = () => {
     setIsEditing(true);
     setEditId(product.id);
     setForm({
-      name: product.name, category: product.category, price: product.price, stock: product.stock, 
+      name: product.name, category: product.category, price: product.price, stock: product.stock ?? 0,
+      rent_stock: product.rent_stock ?? 0,
       image_url: product.image_url || '', description: product.description || '', 
       is_rentable: product.is_rentable || false, rent_price_per_day: product.rent_price_per_day || ''
     });
@@ -173,7 +174,24 @@ export const AdminPage = () => {
   const handleReset = () => {
     setIsEditing(false);
     setEditId(null);
-    setForm({ name: '', category: 'TENDA', price: '', stock: '', image_url: '', description: '', is_rentable: false, rent_price_per_day: '' });
+    setForm({ name: '', category: 'TENDA', price: '', stock: '', rent_stock: '0', image_url: '', description: '', is_rentable: false, rent_price_per_day: '' });
+  };
+
+  const handleQuickAdjustStock = async (product, field, delta) => {
+    const currentVal = Number(product[field] ?? 0);
+    const nextVal = Math.max(0, currentVal + delta);
+    try {
+      const response = await fetch(`http://localhost:5000/api/admin/products/${product.id}/stock`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: nextVal })
+      });
+      if (response.ok) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Gagal update stok cepat:', err);
+    }
   };
 
   const handleDelete = async (id) => {
@@ -505,8 +523,8 @@ export const AdminPage = () => {
                 <option value="TENDA">TENDA</option><option value="TAS / CARRIER">TAS / CARRIER</option><option value="MEMASAK">MEMASAK</option><option value="TIDUR">TIDUR</option>
               </select>
             </div>
-            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga (Rp)</label><input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
-            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Stok</label><input type="number" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
+            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Jual (Rp)</label><input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
+            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Stok Jual (Unit)</label><input type="number" min="0" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div className="sm:col-span-2"><label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Gambar</label><input type="text" value={form.image_url} onChange={e => setForm({...form, image_url: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div className="sm:col-span-2">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Deskripsi Produk</label>
@@ -516,12 +534,18 @@ export const AdminPage = () => {
             <div className="sm:col-span-2 border-t border-dashed border-gray-200 mt-2 pt-4">
               <label className="flex items-center gap-3 cursor-pointer mb-4">
                 <input type="checkbox" checked={form.is_rentable} onChange={e => setForm({...form, is_rentable: e.target.checked})} className="w-5 h-5 text-brand-600 rounded border-gray-300 focus:ring-brand-500" />
-                <span className="font-bold text-gray-700">Produk ini bisa disewakan</span>
+                <span className="font-bold text-gray-700">Produk ini bisa disewakan (Memiliki Stok Sewa Terpisah)</span>
               </label>
               {form.is_rentable && (
-                <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 fade-in">
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Sewa Per Hari (Rp)</label>
-                  <input type="number" required={form.is_rentable} value={form.rent_price_per_day} onChange={e => setForm({...form, rent_price_per_day: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
+                <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 grid sm:grid-cols-2 gap-4 fade-in">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Sewa Per Hari (Rp)</label>
+                    <input type="number" min="0" required={form.is_rentable} value={form.rent_price_per_day} onChange={e => setForm({...form, rent_price_per_day: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-orange-700 uppercase mb-1">Stok Khusus Sewa (Unit)</label>
+                    <input type="number" min="0" required={form.is_rentable} value={form.rent_stock} onChange={e => setForm({...form, rent_stock: e.target.value})} className="w-full bg-white border border-orange-200 rounded-xl px-4 py-2.5 outline-none focus:border-orange-500 font-bold text-orange-800" />
+                  </div>
                 </div>
               )}
             </div>
@@ -536,16 +560,29 @@ export const AdminPage = () => {
 
           {/* Tabel Produk */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4 flex justify-between items-center">
-              Daftar Produk di Database <span className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-medium">{products.length} Item</span>
-            </h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                  Daftar Produk & Manajemen Stok Terpisah
+                  <span className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-medium">{products.length} Item</span>
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">Stok Beli (Jual) dan Stok Sewa dipisahkan. Gunakan tombol <b>- / +</b> untuk menyesuaikan stok gudang secara instan.</p>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm text-gray-600">
                 <thead className="bg-gray-50 text-gray-700 uppercase text-xs">
-                  <tr><th className="p-3">Nama</th><th className="p-3">Kategori</th><th className="p-3">Harga</th><th className="p-3">Stok</th><th className="p-3 text-center">Aksi</th></tr>
+                  <tr>
+                    <th className="p-3">Nama Produk</th>
+                    <th className="p-3">Kategori</th>
+                    <th className="p-3">Harga Jual & Sewa</th>
+                    <th className="p-3 text-center">Stok Jual (Beli)</th>
+                    <th className="p-3 text-center">Stok Sewa</th>
+                    <th className="p-3 text-center">Aksi</th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {products.length === 0 ? <tr><td colSpan="5" className="p-6 text-center text-gray-400">Belum ada produk.</td></tr> : products.map(p => (
+                  {products.length === 0 ? <tr><td colSpan="6" className="p-6 text-center text-gray-400">Belum ada produk.</td></tr> : products.map(p => (
                     <tr key={p.id} className="hover:bg-brand-50/50 transition">
                       <td className="p-3 font-semibold text-gray-800 flex items-center gap-3">
                         <div className="h-10 w-10 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
@@ -553,16 +590,72 @@ export const AdminPage = () => {
                         </div>
                         <div>
                           {p.name}
-                          {p.is_rentable && <span className="ml-2 bg-orange-100 text-orange-600 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Sewa</span>}
+                          {p.is_rentable && <span className="ml-2 bg-orange-100 text-orange-600 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Disewakan</span>}
                         </div>
                       </td>
                       <td className="p-3">{p.category}</td>
-                      <td className="p-3 text-brand-700 font-bold">Rp {Number(p.price).toLocaleString('id-ID')}</td>
-                      <td className="p-3"><span className={`px-2 py-1 rounded-full text-xs font-bold ${p.stock > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{p.stock}</span></td>
+                      <td className="p-3">
+                        <div className="text-brand-700 font-bold">Jual: Rp {Number(p.price).toLocaleString('id-ID')}</div>
+                        {p.is_rentable && (
+                          <div className="text-xs text-orange-600 font-semibold mt-0.5">
+                            Sewa: Rp {Number(p.rent_price_per_day || 0).toLocaleString('id-ID')}/hr
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="inline-flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl p-1">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAdjustStock(p, 'stock', -1)}
+                            className="h-6 w-6 rounded-lg bg-white hover:bg-gray-200 text-gray-700 font-bold text-xs border border-gray-200 transition"
+                            title="Kurangi Stok Jual"
+                          >
+                            -
+                          </button>
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold min-w-[32px] text-center ${Number(p.stock) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                            {p.stock ?? 0}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAdjustStock(p, 'stock', 1)}
+                            className="h-6 w-6 rounded-lg bg-white hover:bg-brand-600 hover:text-white text-gray-700 font-bold text-xs border border-gray-200 transition"
+                            title="Tambah Stok Jual"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center">
+                        {p.is_rentable ? (
+                          <div className="inline-flex items-center gap-1.5 bg-orange-50/60 border border-orange-200 rounded-xl p-1">
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustStock(p, 'rent_stock', -1)}
+                              className="h-6 w-6 rounded-lg bg-white hover:bg-orange-200 text-orange-700 font-bold text-xs border border-orange-200 transition"
+                              title="Kurangi Stok Sewa"
+                            >
+                              -
+                            </button>
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold min-w-[32px] text-center ${Number(p.rent_stock ?? 0) > 0 ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-600'}`}>
+                              {p.rent_stock ?? 0}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustStock(p, 'rent_stock', 1)}
+                              className="h-6 w-6 rounded-lg bg-white hover:bg-orange-500 hover:text-white text-orange-700 font-bold text-xs border border-orange-200 transition"
+                              title="Tambah Stok Sewa"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400 italic">Tidak disewakan</span>
+                        )}
+                      </td>
                       <td className="p-3 text-center">
                         <div className="flex justify-center gap-2">
-                          <button onClick={() => handleEditClick(p)} className="bg-orange-50 text-orange-600 hover:bg-orange-100 h-8 w-8 rounded-lg transition"><i className="fa-solid fa-pen"></i></button>
-                          <button onClick={() => handleDelete(p.id)} className="bg-red-50 text-red-600 hover:bg-red-100 h-8 w-8 rounded-lg transition"><i className="fa-solid fa-trash"></i></button>
+                          <button onClick={() => handleEditClick(p)} className="bg-orange-50 text-orange-600 hover:bg-orange-100 h-8 w-8 rounded-lg transition" title="Edit Produk"><i className="fa-solid fa-pen"></i></button>
+                          <button onClick={() => handleDelete(p.id)} className="bg-red-50 text-red-600 hover:bg-red-100 h-8 w-8 rounded-lg transition" title="Hapus Produk"><i className="fa-solid fa-trash"></i></button>
                         </div>
                       </td>
                     </tr>

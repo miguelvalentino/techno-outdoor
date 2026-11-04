@@ -10,9 +10,24 @@ let guideTablesInitialized = false;
 const ensureGuideTables = async () => {
   if (guideTablesInitialized) return;
   try {
+    // 1. Kolom tambahan tabel guides
     await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
     await db.query("ALTER TABLE guides ADD COLUMN IF NOT EXISTS working_days TEXT[] DEFAULT ARRAY['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu']");
+
+    // 2. Kolom tambahan tabel order_items & orders
     await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS guide_id INT');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_deducted BOOLEAN DEFAULT false');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_returned BOOLEAN DEFAULT false');
+
+    // 3. Kolom stok sewa terpisah pada tabel products
+    await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS rent_stock INT');
+    await db.query('UPDATE products SET rent_stock = COALESCE(stock, 5) WHERE rent_stock IS NULL');
+    await db.query('ALTER TABLE products ALTER COLUMN rent_stock SET DEFAULT 0');
+
+    // 4. Kolom foto profil pada tabel users
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT');
+
+    // 5. Tabel ulasan & jadwal kalender guide
     await db.query(`
       CREATE TABLE IF NOT EXISTS guide_reviews (
         id SERIAL PRIMARY KEY,
@@ -41,7 +56,7 @@ const ensureGuideTables = async () => {
     `);
     guideTablesInitialized = true;
   } catch (err) {
-    console.error('Error initializing guide tables:', err.message);
+    console.error('Error initializing tables:', err.message);
   }
 };
 
@@ -55,6 +70,76 @@ const parseDateRangeFromItemName = (itemName) => {
     start_date: `${y1}-${m1}-${d1}`,
     end_date: `${y2}-${m2}-${d2}`
   };
+};
+
+// Helper sinkronisasi stok jual (stock) & stok sewa (rent_stock) secara idempotent berdasarkan perubahan status order
+const syncOrderInventory = async (orderId, newStatus) => {
+  const orderRes = await db.query(
+    'SELECT id, order_type, status, COALESCE(stock_deducted, false) as stock_deducted, COALESCE(stock_returned, false) as stock_returned FROM orders WHERE id = $1',
+    [orderId]
+  );
+  if (orderRes.rows.length === 0) return;
+  const order = orderRes.rows[0];
+
+  const itemsRes = await db.query(
+    'SELECT product_id, quantity, item_type FROM order_items WHERE order_id = $1 AND product_id IS NOT NULL',
+    [orderId]
+  );
+  if (itemsRes.rows.length === 0) return;
+
+  const isPaidActive = !['Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak'].includes(newStatus);
+  const isCancelled = ['Dibatalkan', 'Reschedule/Ditolak'].includes(newStatus);
+  const isReturnedRental = order.order_type === 'sewa' && newStatus === 'Dikembalikan';
+
+  // KASUS A: Order baru saja dibayar -> Kurangi stok sesuai tipe item (beli -> stock, sewa -> rent_stock)
+  if (isPaidActive && !order.stock_deducted) {
+    for (const item of itemsRes.rows) {
+      const qty = Number(item.quantity || 1);
+      const isRent = item.item_type === 'sewa' || order.order_type === 'sewa';
+      if (isRent) {
+        await db.query(
+          'UPDATE products SET rent_stock = GREATEST(0, COALESCE(rent_stock, 0) - $1) WHERE id = $2',
+          [qty, item.product_id]
+        );
+      } else {
+        await db.query(
+          'UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1) WHERE id = $2',
+          [qty, item.product_id]
+        );
+      }
+    }
+    await db.query('UPDATE orders SET stock_deducted = true, stock_returned = false WHERE id = $1', [orderId]);
+  }
+  // KASUS B: Order yang sudah memotong stok dibatalkan -> Kembalikan stok
+  else if (isCancelled && order.stock_deducted && !order.stock_returned) {
+    for (const item of itemsRes.rows) {
+      const qty = Number(item.quantity || 1);
+      const isRent = item.item_type === 'sewa' || order.order_type === 'sewa';
+      if (isRent) {
+        await db.query(
+          'UPDATE products SET rent_stock = COALESCE(rent_stock, 0) + $1 WHERE id = $2',
+          [qty, item.product_id]
+        );
+      } else {
+        await db.query(
+          'UPDATE products SET stock = COALESCE(stock, 0) + $1 WHERE id = $2',
+          [qty, item.product_id]
+        );
+      }
+    }
+    await db.query('UPDATE orders SET stock_deducted = false, stock_returned = true WHERE id = $1', [orderId]);
+  }
+  // KASUS C: Barang sewa sudah dikembalikan ke toko ('Dikembalikan') -> Kembalikan rent_stock ke gudang sewa
+  else if (isReturnedRental && order.stock_deducted && !order.stock_returned) {
+    for (const item of itemsRes.rows) {
+      const qty = Number(item.quantity || 1);
+      await db.query(
+        'UPDATE products SET rent_stock = COALESCE(rent_stock, 0) + $1 WHERE id = $2',
+        [qty, item.product_id]
+      );
+    }
+    await db.query('UPDATE orders SET stock_returned = true WHERE id = $1', [orderId]);
+  }
 };
 
 // --- 0. PAYMENT CONFIG & WEBHOOK ---
@@ -87,6 +172,7 @@ router.post('/payment/notification', async (req, res) => {
     if (orderId) {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, orderId]);
       await db.query('UPDATE guide_schedules SET status = $1 WHERE order_id = $2', [newStatus, orderId]);
+      await syncOrderInventory(orderId, newStatus);
     }
 
     res.status(200).json({ status: 'OK' });
@@ -98,6 +184,7 @@ router.post('/payment/notification', async (req, res) => {
 
 router.get('/products', async (req, res) => {
   try {
+    await ensureGuideTables();
     const result = await db.query('SELECT * FROM products ORDER BY id ASC');
     res.json(result.rows);
   } catch (err) {
@@ -479,15 +566,18 @@ router.post('/bookings', async (req, res) => {
 });
 
 
+// --- 3. AUTHENTICATION, EDIT PROFILE & DELETE ACCOUNT ---
 router.post('/auth/register', async (req, res) => {
   const { name, email, password, phone, city, address, shoe_size, hiking_level } = req.body;
   try {
+    await ensureGuideTables();
     const userCheck = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (userCheck.rows.length > 0) return res.status(400).json({ error: 'Email sudah terdaftar!' });
 
     const newUser = await db.query(
       `INSERT INTO users (name, email, password_hash, phone, city, address, shoe_size, hiking_level, role) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'customer') RETURNING id, name, email, role, phone, city, hiking_level`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'customer')
+       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url`,
       [name, email, password, phone || null, city || null, address || null, shoe_size || null, hiking_level || 'Pemula']
     );
     res.status(201).json({ message: 'Registrasi berhasil', user: newUser.rows[0] });
@@ -500,7 +590,11 @@ router.post('/auth/register', async (req, res) => {
 router.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
   try {
-    const userResult = await db.query('SELECT id, name, email, role, phone, city, hiking_level FROM users WHERE email = $1 AND password_hash = $2', [email, password]);
+    await ensureGuideTables();
+    const userResult = await db.query(
+      'SELECT id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url FROM users WHERE email = $1 AND password_hash = $2',
+      [email, password]
+    );
     if (userResult.rows.length === 0) return res.status(401).json({ error: 'Email atau kata sandi salah!' });
     res.json({ message: 'Login berhasil', user: userResult.rows[0] });
   } catch (err) {
@@ -509,7 +603,111 @@ router.post('/auth/login', async (req, res) => {
   }
 });
 
+// Edit Profile untuk User maupun Admin
+router.put('/users/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, email, phone, city, address, shoe_size, hiking_level, avatar_url, new_password } = req.body;
+  try {
+    await ensureGuideTables();
+    const userCheck = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+    }
+    const existing = userCheck.rows[0];
 
+    // Jika email diganti, pastikan tidak dipakai akun lain
+    if (email && email !== existing.email) {
+      const emailTaken = await db.query('SELECT id FROM users WHERE email = $1 AND id != $2', [email, id]);
+      if (emailTaken.rows.length > 0) {
+        return res.status(400).json({ error: 'Email tersebut sudah digunakan oleh akun lain.' });
+      }
+    }
+
+    const finalPassword = new_password && String(new_password).trim() !== ''
+      ? String(new_password).trim()
+      : existing.password_hash;
+
+    const updated = await db.query(
+      `UPDATE users
+       SET name = $1, email = $2, phone = $3, city = $4, address = $5, shoe_size = $6,
+           hiking_level = $7, avatar_url = $8, password_hash = $9
+       WHERE id = $10
+       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url`,
+      [
+        name || existing.name,
+        email || existing.email,
+        phone ?? existing.phone,
+        city ?? existing.city,
+        address ?? existing.address,
+        shoe_size ?? existing.shoe_size,
+        hiking_level || existing.hiking_level || 'Pemula',
+        avatar_url !== undefined ? avatar_url : existing.avatar_url,
+        finalPassword,
+        id
+      ]
+    );
+
+    res.json({ message: 'Profil berhasil diperbarui!', user: updated.rows[0] });
+  } catch (err) {
+    console.error('Error update user profile:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui profil: ' + err.message });
+  }
+});
+
+// Delete Account (HANYA untuk User biasa / customer, Admin dilarang dihapus)
+router.delete('/users/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await ensureGuideTables();
+    const userRes = await db.query('SELECT id, name, role FROM users WHERE id = $1', [id]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan.' });
+    }
+    const targetUser = userRes.rows[0];
+
+    // Safeguard 1: Akun Admin tidak boleh dihapus
+    if (targetUser.role === 'admin') {
+      return res.status(403).json({ error: 'Akun Administrator tidak dapat dihapus.' });
+    }
+
+    // Safeguard 2: Cek apakah user masih memiliki tanggungan penyewaan barang atau pendakian aktif yang belum selesai
+    const activeOrderCheck = await db.query(
+      `SELECT id, order_type, status FROM orders
+       WHERE customer_id = $1
+         AND status IN ('Diproses', 'Dikirim', 'Sedang Disewa', 'Dalam Pengiriman Kembali', 'Menunggu Konfirmasi Admin', 'Guide Terkonfirmasi', 'Sedang Mendaki')
+       LIMIT 1`,
+      [id]
+    );
+
+    if (activeOrderCheck.rows.length > 0) {
+      const activeOrd = activeOrderCheck.rows[0];
+      return res.status(400).json({
+        error: `Tidak dapat menghapus akun karena Anda masih memiliki transaksi aktif (#ORD-${activeOrd.id} - Status: ${activeOrd.status}). Selesaikan atau batalkan pesanan terlebih dahulu.`
+      });
+    }
+
+    // Batalkan jadwal guide dari order yang masih Menunggu Pembayaran milik user ini, dan lepaskan relasi customer_id pada riwayat order selesai agar tidak melanggar FK
+    const userOrders = await db.query('SELECT id, status FROM orders WHERE customer_id = $1', [id]);
+    for (const ord of userOrders.rows) {
+      if (ord.status === 'Menunggu Pembayaran') {
+        await db.query('DELETE FROM guide_schedules WHERE order_id = $1', [ord.id]);
+        await db.query('DELETE FROM order_items WHERE order_id = $1', [ord.id]);
+        await db.query('DELETE FROM orders WHERE id = $1', [ord.id]);
+      } else {
+        await db.query('UPDATE orders SET customer_id = NULL WHERE id = $1', [ord.id]);
+      }
+    }
+
+    await db.query('DELETE FROM users WHERE id = $1', [id]);
+    res.json({ message: 'Akun Anda berhasil dihapus secara permanen.' });
+  } catch (err) {
+    console.error('Error delete account:', err.message);
+    res.status(500).json({ error: 'Gagal menghapus akun: ' + err.message });
+  }
+});
+
+
+// --- 4. ORDERS, PEMBAYARAN & STOK TERPISAH ---
 router.post('/orders', async (req, res) => {
   const { customer_id, total_price, items, order_type } = req.body;
   try {
@@ -518,7 +716,7 @@ router.post('/orders', async (req, res) => {
     const hasMidtrans = Boolean(process.env.MIDTRANS_SERVER_KEY);
     const initialStatus = hasMidtrans ? 'Menunggu Pembayaran' : (finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses');
 
-    // Validasi anti double-booking sebelum membuat pesanan guide
+    // Validasi ketersediaan stok jual/sewa DAN anti double-booking guide sebelum membuat pesanan
     for (let item of items) {
       const isGuideItem = item.type === 'booking' || finalOrderType === 'booking' || (typeof item.id === 'string' && item.id.startsWith('guide-'));
       if (isGuideItem) {
@@ -547,11 +745,27 @@ router.post('/orders', async (req, res) => {
             });
           }
         }
+      } else if (typeof item.id === 'number') {
+        // Cek stok produk berdasarkan tipe item (beli -> stock, sewa -> rent_stock)
+        const prodRes = await db.query('SELECT id, name, stock, rent_stock FROM products WHERE id = $1', [item.id]);
+        if (prodRes.rows.length === 0) {
+          return res.status(404).json({ error: `Produk "${item.name}" tidak ditemukan di database.` });
+        }
+        const prod = prodRes.rows[0];
+        const reqQty = Number(item.qty || 1);
+        const isRent = item.type === 'sewa' || finalOrderType === 'sewa';
+        const availStock = isRent ? Number(prod.rent_stock ?? 0) : Number(prod.stock ?? 0);
+
+        if (reqQty > availStock) {
+          return res.status(400).json({
+            error: `Maaf, stok ${isRent ? 'sewa' : 'beli'} untuk "${prod.name}" tidak mencukupi (Tersisa: ${availStock} unit).`
+          });
+        }
       }
     }
 
     const newOrder = await db.query(
-      'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
+      'INSERT INTO orders (customer_id, total_price, status, order_type, stock_deducted, stock_returned) VALUES ($1, $2, $3, $4, false, false) RETURNING id',
       [customer_id, total_price, initialStatus, finalOrderType]
     );
     const orderId = newOrder.rows[0].id;
@@ -573,13 +787,11 @@ router.post('/orders', async (req, res) => {
         } else if (typeof item.id === 'number') {
           guideId = item.id;
         }
-        // PENTING: productId dibiarkan NULL untuk item guide agar tidak melanggar Foreign Key ke tabel products!
         productId = null;
       } else if (typeof item.id === 'number') {
         productId = item.id;
       }
 
-      // Hindari menyimpan string base64 raksasa di kolom item_image jika sudah ada relasi guide_id / product_id
       const safeItemImage = item.image_url && item.image_url.startsWith('data:image') && guideId
         ? ''
         : (item.image_url || '');
@@ -589,7 +801,6 @@ router.post('/orders', async (req, res) => {
         [orderId, productId, guideId, item.qty || 1, item.price, item.name, safeItemImage, item.type || finalOrderType || 'beli']
       );
 
-      // Catat jadwal ke guide_schedules dengan status awal (jika 'Menunggu Pembayaran', belum memblokir kalender sampai dibayar!)
       if (isGuideItem && guideId) {
         const parsedRange = (item.start_date && item.end_date)
           ? { start_date: item.start_date, end_date: item.end_date }
@@ -612,6 +823,11 @@ router.post('/orders', async (req, res) => {
           );
         }
       }
+    }
+
+    // Jika tidak menggunakan Midtrans (langsung Diproses), kurangi stok sekarang
+    if (!hasMidtrans) {
+      await syncOrderInventory(orderId, initialStatus);
     }
 
     let snapToken = null;
@@ -668,7 +884,7 @@ router.post('/orders/:id/pay', async (req, res) => {
     }
     const order = orderRes.rows[0];
 
-    // Cek apakah tanggal guide pada order ini sudah dibooking dan dibayar orang lain sementara order ini masih pending
+    // 1. Cek apakah tanggal guide pada order ini sudah dibooking dan dibayar orang lain sementara order ini masih pending
     if (order.order_type === 'booking') {
       const mySchedules = await db.query('SELECT * FROM guide_schedules WHERE order_id = $1', [order.id]);
       for (const sch of mySchedules.rows) {
@@ -685,6 +901,21 @@ router.post('/orders/:id/pay', async (req, res) => {
         if (conflictRes.rows.length > 0) {
           return res.status(400).json({
             error: 'Maaf, jadwal pemandu pada tanggal tersebut sudah dibooking dan dibayar oleh pengguna lain.'
+          });
+        }
+      }
+    } else {
+      // 2. Cek apakah stok produk (beli / sewa) masih cukup saat pelanggan hendak membayar tagihan tertunda
+      const orderItems = await db.query(
+        'SELECT oi.product_id, oi.quantity, oi.item_type, p.name, p.stock, p.rent_stock FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = $1',
+        [order.id]
+      );
+      for (const item of orderItems.rows) {
+        const isRent = item.item_type === 'sewa' || order.order_type === 'sewa';
+        const avail = isRent ? Number(item.rent_stock ?? 0) : Number(item.stock ?? 0);
+        if (Number(item.quantity || 1) > avail) {
+          return res.status(400).json({
+            error: `Maaf, stok ${isRent ? 'sewa' : 'beli'} untuk "${item.name}" saat ini sudah habis atau tidak mencukupi (Tersisa: ${avail} unit).`
           });
         }
       }
@@ -766,13 +997,24 @@ router.get('/orders/user/:userId', async (req, res) => {
 
 
 router.post('/admin/products', async (req, res) => {
-  const { name, category, description, price, rent_price_per_day, stock, image_url, is_rentable } = req.body;
+  const { name, category, description, price, rent_price_per_day, stock, rent_stock, image_url, is_rentable } = req.body;
   try {
+    await ensureGuideTables();
     const query = `
-      INSERT INTO products (name, category, description, price, rent_price_per_day, stock, image_url, is_rentable) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;
+      INSERT INTO products (name, category, description, price, rent_price_per_day, stock, rent_stock, image_url, is_rentable) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;
     `;
-    const newProduct = await db.query(query, [name, category, description, price, rent_price_per_day || 0, stock || 0, image_url, is_rentable || false]);
+    const newProduct = await db.query(query, [
+      name,
+      category,
+      description,
+      Number(price) || 0,
+      Number(rent_price_per_day) || 0,
+      Number(stock) || 0,
+      Number(rent_stock) || 0,
+      image_url,
+      Boolean(is_rentable)
+    ]);
     res.status(201).json({ message: 'Produk ditambahkan', product: newProduct.rows[0] });
   } catch (err) {
     console.error(err.message);
@@ -782,17 +1024,56 @@ router.post('/admin/products', async (req, res) => {
 
 router.put('/admin/products/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, category, description, price, rent_price_per_day, stock, image_url, is_rentable } = req.body;
+  const { name, category, description, price, rent_price_per_day, stock, rent_stock, image_url, is_rentable } = req.body;
   try {
+    await ensureGuideTables();
     const query = `
-      UPDATE products SET name=$1, category=$2, description=$3, price=$4, rent_price_per_day=$5, stock=$6, image_url=$7, is_rentable=$8 
-      WHERE id=$9 RETURNING *;
+      UPDATE products
+      SET name=$1, category=$2, description=$3, price=$4, rent_price_per_day=$5,
+          stock=$6, rent_stock=$7, image_url=$8, is_rentable=$9 
+      WHERE id=$10 RETURNING *;
     `;
-    const updatedProduct = await db.query(query, [name, category, description, price, rent_price_per_day || 0, stock || 0, image_url, is_rentable || false, id]);
+    const updatedProduct = await db.query(query, [
+      name,
+      category,
+      description,
+      Number(price) || 0,
+      Number(rent_price_per_day) || 0,
+      Number(stock) || 0,
+      Number(rent_stock) || 0,
+      image_url,
+      Boolean(is_rentable),
+      id
+    ]);
     res.json({ message: 'Produk diperbarui', product: updatedProduct.rows[0] });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal memperbarui produk' });
+  }
+});
+
+// Endpoint Quick Adjust Stock (Tambah / Kurangi Stok Jual atau Stok Sewa secara instan dari Tabel Admin)
+router.patch('/admin/products/:id/stock', async (req, res) => {
+  const { id } = req.params;
+  const { stock, rent_stock } = req.body;
+  try {
+    await ensureGuideTables();
+    const currentRes = await db.query('SELECT stock, rent_stock FROM products WHERE id = $1', [id]);
+    if (currentRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Produk tidak ditemukan' });
+    }
+    const cur = currentRes.rows[0];
+    const nextStock = stock !== undefined ? Math.max(0, Number(stock)) : Number(cur.stock || 0);
+    const nextRentStock = rent_stock !== undefined ? Math.max(0, Number(rent_stock)) : Number(cur.rent_stock || 0);
+
+    const updated = await db.query(
+      'UPDATE products SET stock = $1, rent_stock = $2 WHERE id = $3 RETURNING *',
+      [nextStock, nextRentStock, id]
+    );
+    res.json({ message: 'Stok berhasil diperbarui', product: updated.rows[0] });
+  } catch (err) {
+    console.error('Error quick update stock:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui stok' });
   }
 });
 
@@ -847,6 +1128,9 @@ router.put('/orders/:id/status', async (req, res) => {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, req.params.id]);
     }
 
+    // Sinkronkan pengurangan / pengembalian stok produk (beli & sewa) secara otomatis
+    await syncOrderInventory(req.params.id, status);
+
     // Sinkronkan status jadwal kalender guide jika order ini adalah booking guide
     if (status === 'Dibatalkan' || status === 'Reschedule/Ditolak') {
       await db.query("UPDATE guide_schedules SET status = 'Dibatalkan' WHERE order_id = $1", [req.params.id]);
@@ -878,6 +1162,7 @@ router.delete('/orders/:id', async (req, res) => {
   try {
     await ensureGuideTables();
     await db.query('DELETE FROM guide_schedules WHERE order_id = $1', [req.params.id]);
+    await db.query('DELETE FROM order_items WHERE order_id = $1', [req.params.id]);
     await db.query('DELETE FROM orders WHERE id = $1', [req.params.id]);
     res.json({ message: 'Pesanan berhasil dihapus' });
   } catch (err) {
@@ -890,7 +1175,7 @@ router.get('/admin/stats', async (req, res) => {
   try {
     const usersRes = await db.query("SELECT COUNT(*) FROM users WHERE role = 'customer'");
     const ordersRes = await db.query("SELECT COUNT(*) FROM orders");
-    const revenueRes = await db.query("SELECT SUM(total_price) FROM orders WHERE status != 'Dibatalkan'");
+    const revenueRes = await db.query("SELECT SUM(total_price) FROM orders WHERE status NOT IN ('Dibatalkan', 'Menunggu Pembayaran', 'Reschedule/Ditolak')");
     const guidesRes = await db.query("SELECT COUNT(*) FROM guides");
     res.json({
       totalUsers: parseInt(usersRes.rows[0].count) || 0,

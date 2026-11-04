@@ -1,5 +1,6 @@
 // src/components/CartModal.jsx
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { useAuth } from '../context/AuthContext';
@@ -29,6 +30,13 @@ export const CartModal = ({ isOpen, onClose }) => {
     if (!user) {
       alert('Silakan Login atau Daftar terlebih dahulu untuk melanjutkan pembayaran.');
       onClose();
+      return;
+    }
+
+    // Validasi: Pastikan tidak mencampur tipe transaksi berbeda dalam 1 kali checkout agar alur stok & status akurat
+    const distinctTypes = Array.from(new Set(cartItems.map(item => item.type || 'beli')));
+    if (distinctTypes.length > 1) {
+      alert('Mohon pisahkan checkout antara Pembelian Alat, Penyewaan Alat, dan Booking Guide agar pelacakan status dan stok akurat.');
       return;
     }
     
@@ -63,7 +71,7 @@ export const CartModal = ({ isOpen, onClose }) => {
           window.snap.pay(data.snap_token, {
             onSuccess: async function (result) {
               console.log('Payment success:', result);
-              // Segera perbarui status order menjadi Diproses
+              // Segera perbarui status order menjadi Diproses (sekaligus memotong stok / mengunci jadwal guide di backend)
               try {
                 await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
                   method: 'PUT',
@@ -74,10 +82,13 @@ export const CartModal = ({ isOpen, onClose }) => {
                 console.error(e);
               }
 
+              // AUTO-CLEAR KERANJANG HANYA SAAT PEMBAYARAN SUKSES!
               clearCart();
+              window.dispatchEvent(new Event('outdoor-order-paid'));
+
               setCheckoutResult({
                 title: 'Pembayaran Berhasil!',
-                message: `Terima kasih, ${user?.name}. Pembayaran Anda telah terverifikasi dan pesanan sedang diproses.`,
+                message: `Terima kasih, ${user?.name}. Pembayaran Anda telah terverifikasi, stok/jadwal telah dikunci, dan keranjang belanja telah dikosongkan.`,
                 icon: 'fa-solid fa-circle-check',
                 iconColor: 'bg-green-100 text-green-500',
                 orderId: orderId
@@ -86,10 +97,10 @@ export const CartModal = ({ isOpen, onClose }) => {
             },
             onPending: function (result) {
               console.log('Payment pending:', result);
-              clearCart();
+              // PENTING: JANGAN kosongkan keranjang jika baru pending (belum dibayar sukses)
               setCheckoutResult({
                 title: 'Menunggu Pembayaran',
-                message: `Tagihan pesanan Anda telah dibuat. Silakan selesaikan pembayaran sesuai metode yang Anda pilih di halaman Profil.`,
+                message: `Tagihan pesanan #ORD-${orderId} telah dibuat. Keranjang hanya akan dikosongkan dan stok/jadwal baru akan dikunci setelah pembayaran Anda selesai.`,
                 icon: 'fa-solid fa-clock-rotate-left',
                 iconColor: 'bg-amber-100 text-amber-600',
                 orderId: orderId
@@ -117,12 +128,13 @@ export const CartModal = ({ isOpen, onClose }) => {
               }
               // JANGAN kosongkan keranjang dan JANGAN munculkan modal sukses
               setIsSuccess(false);
-              alert('Pembayaran dibatalkan. Produk tetap tersimpan di keranjang Anda.');
+              alert('Pembayaran belum diselesaikan. Produk tetap tersimpan di keranjang Anda.');
             }
           });
         } else {
           // Fallback jika tidak menggunakan Midtrans
           clearCart(); 
+          window.dispatchEvent(new Event('outdoor-order-paid'));
           setCheckoutResult({
             title: 'Checkout Berhasil!',
             message: `Terima kasih, ${user?.name}. Pesanan Anda sedang diproses.`,
@@ -144,8 +156,8 @@ export const CartModal = ({ isOpen, onClose }) => {
   };
 
   if (isSuccess) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 fade-in">
+    return createPortal(
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 fade-in">
         <div className="bg-white rounded-3xl w-full max-w-md p-8 text-center shadow-2xl scale-up">
           <div className={`mx-auto w-24 h-24 rounded-full flex items-center justify-center text-5xl mb-6 shadow-inner ${checkoutResult.iconColor}`}>
             <i className={checkoutResult.icon}></i>
@@ -180,12 +192,13 @@ export const CartModal = ({ isOpen, onClose }) => {
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 fade-in">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 fade-in">
       <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         
         <div className="p-5 border-b border-gray-100 flex items-center justify-between bg-brand-800 text-white">
@@ -272,6 +285,7 @@ export const CartModal = ({ isOpen, onClose }) => {
         )}
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

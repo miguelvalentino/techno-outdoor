@@ -66,6 +66,9 @@ export const GuideSection = () => {
 
   useEffect(() => {
     fetchGuides();
+    const handleOrderPaid = () => fetchGuides();
+    window.addEventListener('outdoor-order-paid', handleOrderPaid);
+    return () => window.removeEventListener('outdoor-order-paid', handleOrderPaid);
   }, []);
 
   const availableMountains = Array.from(

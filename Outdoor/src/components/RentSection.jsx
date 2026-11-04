@@ -43,11 +43,11 @@ export const RentSection = () => {
     }
   }, [startDate, endDate]);
 
-  useEffect(() => {
+  const fetchRentProducts = () => {
     fetch('http://localhost:5000/api/products')
       .then(res => res.json())
       .then(data => {
-        const rentableItems = data.filter(product => product.is_rentable === true);
+        const rentableItems = Array.isArray(data) ? data.filter(product => product.is_rentable === true) : [];
         setRentProducts(rentableItems);
         setLoading(false);
       })
@@ -55,9 +55,17 @@ export const RentSection = () => {
         console.error('Gagal memuat produk sewa:', err);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    fetchRentProducts();
+    const handleOrderPaid = () => fetchRentProducts();
+    window.addEventListener('outdoor-order-paid', handleOrderPaid);
+    return () => window.removeEventListener('outdoor-order-paid', handleOrderPaid);
   }, []);
 
   const handleRent = (product) => {
+    const rentStock = Number(product.rent_stock ?? 0);
     const totalRentPrice = Number(product.rent_price_per_day) * rentDays;
     const displayDate = `${startDate.split('-').reverse().join('/')} s/d ${endDate.split('-').reverse().join('/')}`;
 
@@ -67,7 +75,7 @@ export const RentSection = () => {
       name: `[Sewa ${rentDays} Hari] ${product.name} (${displayDate})`, 
       price: totalRentPrice, 
       qty: 1,
-      stock: product.stock, 
+      stock: rentStock, 
       image_url: product.image_url
     });
   };
@@ -133,48 +141,51 @@ export const RentSection = () => {
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-          {rentProducts.map(product => (
-            <div key={product.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col hover:shadow-lg transition group">
-              <div className="aspect-[4/3] bg-gray-100 relative overflow-hidden">
-                <div className="absolute top-2 left-2 bg-orange-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider z-10 shadow-sm">
-                  Disewakan
-                </div>
-                
-                {/* BADGE SISA STOK */}
-                <div className="absolute top-2 right-2 z-10">
-                  <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm ${product.stock > 0 ? 'bg-white/90 text-orange-800 backdrop-blur-sm' : 'bg-red-600 text-white'}`}>
-                    {product.stock > 0 ? `Stok: ${product.stock}` : 'Habis'}
-                  </span>
-                </div>
-
-                {product.image_url ? (
-                  <img src={product.image_url} alt={product.name} className="h-full w-full object-cover group-hover:scale-110 transition duration-500" />
-                ) : (
-                  <i className="fa-solid fa-image h-full w-full flex items-center justify-center text-gray-400 text-3xl"></i>
-                )}
-              </div>
-              
-              <div className="p-4 flex flex-col flex-grow">
-                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">{product.category}</span>
-                <h3 className="font-bold text-gray-800 text-sm mb-2 line-clamp-2">{product.name}</h3>
-                
-                <div className="mt-auto pt-3 border-t border-gray-100 flex justify-between items-center">
-                  <div>
-                    <p className="text-[10px] text-gray-400 font-bold uppercase">Total ({rentDays} Hari)</p>
-                    <p className="font-black text-orange-600">Rp {(Number(product.rent_price_per_day) * rentDays).toLocaleString('id-ID')}</p>
+          {rentProducts.map(product => {
+            const rentStock = Number(product.rent_stock ?? 0);
+            return (
+              <div key={product.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col hover:shadow-lg transition group">
+                <div className="aspect-[4/3] bg-gray-100 relative overflow-hidden">
+                  <div className="absolute top-2 left-2 bg-orange-500 text-white text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider z-10 shadow-sm">
+                    Disewakan
                   </div>
+                  
+                  {/* BADGE SISA STOK SEWA TERPISAH */}
+                  <div className="absolute top-2 right-2 z-10">
+                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm ${rentStock > 0 ? 'bg-white/90 text-orange-800 backdrop-blur-sm' : 'bg-red-600 text-white'}`}>
+                      {rentStock > 0 ? `Stok Sewa: ${rentStock}` : 'Stok Sewa Habis'}
+                    </span>
+                  </div>
+
+                  {product.image_url ? (
+                    <img src={product.image_url} alt={product.name} className="h-full w-full object-cover group-hover:scale-110 transition duration-500" />
+                  ) : (
+                    <i className="fa-solid fa-image h-full w-full flex items-center justify-center text-gray-400 text-3xl"></i>
+                  )}
                 </div>
                 
-                <button 
-                  onClick={() => handleRent(product)}
-                  disabled={product.stock <= 0}
-                  className={`mt-3 w-full py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${product.stock > 0 ? 'bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-                >
-                  {product.stock > 0 ? <><i className="fa-solid fa-plus"></i> Sewa</> : 'Stok Habis'}
-                </button>
+                <div className="p-4 flex flex-col flex-grow">
+                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">{product.category}</span>
+                  <h3 className="font-bold text-gray-800 text-sm mb-2 line-clamp-2">{product.name}</h3>
+                  
+                  <div className="mt-auto pt-3 border-t border-gray-100 flex justify-between items-center">
+                    <div>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Total ({rentDays} Hari)</p>
+                      <p className="font-black text-orange-600">Rp {(Number(product.rent_price_per_day) * rentDays).toLocaleString('id-ID')}</p>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={() => handleRent(product)}
+                    disabled={rentStock <= 0}
+                    className={`mt-3 w-full py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${rentStock > 0 ? 'bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  >
+                    {rentStock > 0 ? <><i className="fa-solid fa-plus"></i> Sewa</> : 'Stok Sewa Habis'}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>

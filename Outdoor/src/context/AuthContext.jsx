@@ -9,7 +9,11 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
     if (savedUser) {
-      setUser(JSON.parse(savedUser));
+      try {
+        setUser(JSON.parse(savedUser));
+      } catch {
+        localStorage.removeItem('user');
+      }
     }
   }, []);
 
@@ -18,13 +22,21 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem('user', JSON.stringify(userData)); 
   };
 
+  const updateUser = (updatedData) => {
+    setUser((prev) => {
+      const merged = prev ? { ...prev, ...updatedData } : updatedData;
+      localStorage.setItem('user', JSON.stringify(merged));
+      return merged;
+    });
+  };
+
   const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, updateUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

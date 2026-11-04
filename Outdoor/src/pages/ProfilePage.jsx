@@ -1,10 +1,14 @@
 // src/pages/ProfilePage.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext'; 
+import { useAuth } from '../context/AuthContext';
+import { useCart } from '../context/CartContext';
+import { ImageCropModal } from '../components/ImageCropModal';
 
 export const ProfilePage = () => {
-  const { user } = useAuth();
+  const { user, updateUser, logout } = useAuth();
+  const { clearCart } = useCart();
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState('pembelian');
@@ -20,6 +24,29 @@ export const ProfilePage = () => {
   const [reviewRatings, setReviewRatings] = useState({});
   const [reviewComments, setReviewComments] = useState({});
   const [submittingReviewKey, setSubmittingReviewKey] = useState(null);
+
+  // --- STATE EDIT PROFIL & UPLOAD/CROP FOTO ---
+  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    city: '',
+    address: '',
+    shoe_size: '',
+    hiking_level: 'Pemula',
+    avatar_url: '',
+    new_password: ''
+  });
+  const avatarFileInputRef = useRef(null);
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [rawImageToCrop, setRawImageToCrop] = useState('');
+
+  // --- STATE HAPUS AKUN (KHUSUS USER BIASA / CUSTOMER) ---
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const fetchOrders = () => {
     if (!user) return;
@@ -43,7 +70,94 @@ export const ProfilePage = () => {
     fetchOrders();
   }, [user, navigate]);
 
-  if (!user) return null; 
+  if (!user) return null;
+
+  const openEditProfileModal = () => {
+    setProfileForm({
+      name: user.name || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      city: user.city || '',
+      address: user.address || '',
+      shoe_size: user.shoe_size || '',
+      hiking_level: user.hiking_level || 'Pemula',
+      avatar_url: user.avatar_url || '',
+      new_password: ''
+    });
+    setIsEditProfileOpen(true);
+  };
+
+  const handleAvatarFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Mohon pilih file gambar (JPG, PNG, WEBP).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setRawImageToCrop(reader.result);
+      setCropModalOpen(true);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/users/${user.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profileForm)
+      });
+      const data = await response.json();
+      if (response.ok) {
+        updateUser(data.user);
+        setIsEditProfileOpen(false);
+        alert(data.message || 'Profil berhasil diperbarui!');
+      } else {
+        alert(data.error || 'Gagal memperbarui profil.');
+      }
+    } catch (err) {
+      console.error('Error save profile:', err);
+      alert('Terjadi kesalahan jaringan.');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (user.role === 'admin') return;
+    if (deleteConfirmText.trim().toUpperCase() !== 'HAPUS') {
+      alert('Mohon ketik kata HAPUS untuk mengonfirmasi penghapusan akun.');
+      return;
+    }
+
+    setDeletingAccount(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/users/${user.id}`, {
+        method: 'DELETE'
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        alert(data.message || 'Akun Anda berhasil dihapus.');
+        setIsDeleteModalOpen(false);
+        clearCart();
+        logout();
+        navigate('/');
+      } else {
+        alert(data.error || 'Gagal menghapus akun.');
+      }
+    } catch (err) {
+      console.error('Error delete account:', err);
+      alert('Terjadi kesalahan jaringan.');
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
 
   const filteredOrders = orders.filter(order => {
     if (activeTab === 'pembelian') return order.order_type === 'beli';
@@ -65,6 +179,7 @@ export const ProfilePage = () => {
         return 'bg-yellow-100 text-yellow-700 border border-yellow-300';
       case 'Dalam Pengiriman Kembali':
       case 'Menunggu Konfirmasi Admin': 
+      case 'Diproses':
         return 'bg-purple-100 text-purple-700 border border-purple-200';
       case 'Dibatalkan':
       case 'Reschedule/Ditolak':
@@ -93,6 +208,9 @@ export const ProfilePage = () => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ status: 'Diproses' })
             });
+            // Kosongkan keranjang & beri tahu halaman katalog bahwa pembayaran sukses
+            clearCart();
+            window.dispatchEvent(new Event('outdoor-order-paid'));
             alert('Pembayaran berhasil diverifikasi! Pesanan Anda sedang diproses.');
             fetchOrders();
           },
@@ -234,23 +352,67 @@ export const ProfilePage = () => {
   return (
     <div className="max-w-4xl mx-auto px-4 py-10 flex-grow w-full fade-in">
       
+      {/* KARTU PROFIL UTAMA */}
       <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-gray-100 mb-8 flex flex-col sm:flex-row items-center sm:items-start gap-6 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-brand-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50 pointer-events-none"></div>
 
-        <div className="h-24 w-24 rounded-full bg-brand-100 flex items-center justify-center border-4 border-white shadow-md flex-shrink-0 relative z-10">
-          <i className="fa-solid fa-user text-4xl text-brand-600"></i>
+        {/* Avatar dengan tombol ganti cepat */}
+        <div className="relative group flex-shrink-0 z-10">
+          <div className="h-24 w-24 rounded-full bg-brand-100 flex items-center justify-center border-4 border-white shadow-md overflow-hidden">
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt={user.name} className="h-full w-full object-cover" />
+            ) : (
+              <i className="fa-solid fa-user text-4xl text-brand-600"></i>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={openEditProfileModal}
+            title="Ganti Foto & Edit Profil"
+            className="absolute bottom-0 right-0 h-8 w-8 rounded-full bg-brand-600 hover:bg-brand-700 text-white shadow-md flex items-center justify-center text-xs transition border-2 border-white"
+          >
+            <i className="fa-solid fa-camera"></i>
+          </button>
         </div>
         
-        <div className="text-center sm:text-left flex-grow relative z-10">
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">{user.name}</h1>
-          <p className="text-gray-500 text-sm mb-3">{user.email}</p>
-          <span className={`font-bold text-xs px-3 py-1 rounded-full uppercase tracking-wide ${user.role === 'admin' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
-            {user.role}
-          </span>
-
-          <div className="mt-5 grid grid-cols-2 gap-y-3 gap-x-6 text-sm max-w-lg border-t border-gray-100 pt-4">
+        <div className="text-center sm:text-left flex-grow relative z-10 w-full">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
             <div>
-              <p className="text-gray-400 text-xs font-bold uppercase mb-0.5">No. HP</p>
+              <h1 className="text-2xl font-bold text-gray-900 mb-0.5">{user.name}</h1>
+              <p className="text-gray-500 text-sm mb-2">{user.email}</p>
+              <span className={`font-bold text-xs px-3 py-1 rounded-full uppercase tracking-wide ${user.role === 'admin' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
+                {user.role}
+              </span>
+            </div>
+
+            {/* TOMBOL AKSI PROFIL: EDIT PROFIL (SEMUA) & HAPUS AKUN (KHUSUS USER BIASA / BUKAN ADMIN) */}
+            <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
+              <button
+                type="button"
+                onClick={openEditProfileModal}
+                className="bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white border border-brand-200 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 shadow-xs"
+              >
+                <i className="fa-solid fa-user-pen"></i> Edit Profil
+              </button>
+
+              {user.role !== 'admin' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteConfirmText('');
+                    setIsDeleteModalOpen(true);
+                  }}
+                  className="bg-red-50 hover:bg-red-600 text-red-600 hover:text-white border border-red-200 font-bold text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 shadow-xs"
+                >
+                  <i className="fa-solid fa-user-xmark"></i> Hapus Akun
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-y-3 gap-x-6 text-sm border-t border-gray-100 pt-4">
+            <div>
+              <p className="text-gray-400 text-xs font-bold uppercase mb-0.5">No. HP / WA</p>
               <p className="text-gray-800 font-medium">{user.phone || '-'}</p>
             </div>
             <div>
@@ -261,6 +423,16 @@ export const ProfilePage = () => {
               <p className="text-gray-400 text-xs font-bold uppercase mb-0.5">Level Pendaki</p>
               <p className="text-gray-800 font-medium">{user.hiking_level || 'Pemula'}</p>
             </div>
+            <div>
+              <p className="text-gray-400 text-xs font-bold uppercase mb-0.5">Ukuran Sepatu</p>
+              <p className="text-gray-800 font-medium">{user.shoe_size || '-'}</p>
+            </div>
+            {user.address && (
+              <div className="col-span-2 sm:col-span-4 pt-1">
+                <p className="text-gray-400 text-xs font-bold uppercase mb-0.5">Alamat Lengkap</p>
+                <p className="text-gray-700 text-xs">{user.address}</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -615,6 +787,274 @@ export const ProfilePage = () => {
           </div>
         )}
       </div>
+
+      {/* MODAL EDIT PROFIL (UNTUK USER & ADMIN) */}
+      {isEditProfileOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 fade-in"
+          onClick={() => setIsEditProfileOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100 mb-5">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                  <i className="fa-solid fa-user-pen text-brand-600"></i> Edit Profil Saya
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">Perbarui foto profil, informasi kontak, dan detail akun Anda.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditProfileOpen(false)}
+                className="h-9 w-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProfile} className="space-y-4">
+              {/* Foto Profil + Upload & Crop */}
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200 flex flex-col sm:flex-row items-center gap-4">
+                <div className="h-20 w-20 rounded-full bg-brand-100 border-4 border-white shadow-md overflow-hidden flex items-center justify-center flex-shrink-0">
+                  {profileForm.avatar_url ? (
+                    <img src={profileForm.avatar_url} alt="Avatar Preview" className="h-full w-full object-cover" />
+                  ) : (
+                    <i className="fa-solid fa-user text-3xl text-brand-600"></i>
+                  )}
+                </div>
+
+                <div className="flex-grow space-y-2 w-full">
+                  <label className="block text-xs font-bold text-gray-600 uppercase">Foto Profil (Link URL atau Upload File)</label>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      ref={avatarFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarFileSelect}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      className="bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+                    >
+                      <i className="fa-solid fa-upload"></i> Upload & Crop Foto
+                    </button>
+                    {profileForm.avatar_url && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRawImageToCrop(profileForm.avatar_url);
+                            setCropModalOpen(true);
+                          }}
+                          className="bg-white hover:bg-gray-100 text-gray-700 border border-gray-200 text-xs font-bold px-3 py-2 rounded-xl transition flex items-center gap-1"
+                        >
+                          <i className="fa-solid fa-crop-simple"></i> Crop Ulang
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProfileForm({ ...profileForm, avatar_url: '' })}
+                          className="bg-white hover:bg-red-50 text-red-600 border border-gray-200 text-xs font-bold px-3 py-2 rounded-xl transition"
+                          title="Hapus Foto"
+                        >
+                          <i className="fa-solid fa-trash-can"></i>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Atau tempel link gambar (https://...)"
+                    value={profileForm.avatar_url?.startsWith('data:image') ? '' : profileForm.avatar_url}
+                    onChange={(e) => setProfileForm({ ...profileForm, avatar_url: e.target.value })}
+                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-500"
+                  />
+                </div>
+              </div>
+
+              {/* Informasi Dasar */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Lengkap</label>
+                  <input
+                    type="text"
+                    required
+                    value={profileForm.name}
+                    onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Email</label>
+                  <input
+                    type="email"
+                    required
+                    value={profileForm.email}
+                    onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">No. HP / WhatsApp</label>
+                  <input
+                    type="text"
+                    placeholder="081234567890"
+                    value={profileForm.phone}
+                    onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Kota Domisili</label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: Bandung"
+                    value={profileForm.city}
+                    onChange={(e) => setProfileForm({ ...profileForm, city: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Level Pendaki</label>
+                  <select
+                    value={profileForm.hiking_level}
+                    onChange={(e) => setProfileForm({ ...profileForm, hiking_level: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  >
+                    <option value="Pemula">Pemula</option>
+                    <option value="Menengah">Menengah</option>
+                    <option value="Pro / Expert">Pro / Expert</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Ukuran Sepatu</label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: 42"
+                    value={profileForm.shoe_size}
+                    onChange={(e) => setProfileForm({ ...profileForm, shoe_size: e.target.value })}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Alamat Lengkap</label>
+                <textarea
+                  rows="2"
+                  placeholder="Jl. Contoh No. 123..."
+                  value={profileForm.address}
+                  onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-brand-500 focus:bg-white resize-none"
+                />
+              </div>
+
+              <div className="border-t border-dashed border-gray-200 pt-3">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">
+                  Ganti Kata Sandi Baru <span className="text-gray-400 font-normal">(Kosongkan jika tidak ingin mengubah)</span>
+                </label>
+                <input
+                  type="password"
+                  placeholder="Masukkan kata sandi baru..."
+                  value={profileForm.new_password}
+                  onChange={(e) => setProfileForm({ ...profileForm, new_password: e.target.value })}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-brand-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsEditProfileOpen(false)}
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl text-sm transition"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingProfile}
+                  className="flex-1 bg-brand-600 hover:bg-brand-700 text-white font-bold py-3 rounded-xl text-sm shadow-md transition flex items-center justify-center gap-2"
+                >
+                  <i className="fa-solid fa-floppy-disk"></i>
+                  {savingProfile ? 'Menyimpan...' : 'Simpan Perubahan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* MODAL CROP FOTO PROFIL */}
+      <ImageCropModal
+        isOpen={cropModalOpen}
+        imageSrc={rawImageToCrop}
+        onClose={() => setCropModalOpen(false)}
+        onCropComplete={(croppedDataUrl) => setProfileForm((prev) => ({ ...prev, avatar_url: croppedDataUrl }))}
+      />
+
+      {/* MODAL KONFIRMASI HAPUS AKUN (HANYA UNTUK USER BIASA / NON-ADMIN) */}
+      {isDeleteModalOpen && user.role !== 'admin' && createPortal(
+        <div
+          className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 fade-in"
+          onClick={() => setIsDeleteModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-14 h-14 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center text-2xl mb-4 mx-auto">
+              <i className="fa-solid fa-triangle-exclamation"></i>
+            </div>
+
+            <h3 className="text-xl font-bold text-gray-900 text-center mb-2">Hapus Akun Secara Permanen?</h3>
+            <p className="text-xs text-gray-500 text-center leading-relaxed mb-4">
+              Tindakan ini tidak dapat dibatalkan. Seluruh data profil Anda (<b>{user.email}</b>) akan dihapus secara permanen dari sistem Outdoor Warrent.
+            </p>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-800 mb-4">
+              <i className="fa-solid fa-circle-info mr-1"></i>
+              <b>Catatan Keamanan:</b> Akun tidak dapat dihapus apabila Anda masih memiliki barang sewaan yang belum dikembalikan atau jadwal pendakian aktif yang sedang berjalan.
+            </div>
+
+            <div className="mb-5">
+              <label className="block text-xs font-bold text-gray-600 mb-1.5">
+                Ketik <span className="text-red-600 font-black">HAPUS</span> di bawah ini untuk mengonfirmasi:
+              </label>
+              <input
+                type="text"
+                placeholder="Ketik HAPUS"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-2.5 text-sm font-bold text-gray-800 outline-none focus:border-red-500 uppercase"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2.5 rounded-xl text-sm transition"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={deletingAccount || deleteConfirmText.trim().toUpperCase() !== 'HAPUS'}
+                onClick={handleDeleteAccount}
+                className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-200 disabled:text-gray-400 text-white font-bold py-2.5 rounded-xl text-sm shadow-md transition flex items-center justify-center gap-2"
+              >
+                <i className="fa-solid fa-trash-can"></i>
+                {deletingAccount ? 'Menghapus...' : 'Ya, Hapus Akun'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       
     </div>
   );
