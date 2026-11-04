@@ -1,7 +1,9 @@
 // src/components/GuideSection.jsx
 import { useState, useEffect } from 'react';
 import { useCart } from '../context/CartContext';
-import { BookingModal } from './BookingModal';
+import { BookingModal, checkGuideAvailability } from './BookingModal';
+
+const ALL_DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
 
 const formatDate = (date) => {
   const d = new Date(date);
@@ -20,12 +22,11 @@ export const GuideSection = () => {
   const [selectedMountain, setSelectedMountain] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('rating');
-  const [onlyVerified, setOnlyVerified] = useState(false);
   const [selectedGuideForModal, setSelectedGuideForModal] = useState(null);
   
   const today = new Date();
   const defaultEnd = new Date();
-  defaultEnd.setDate(today.getDate() + 2); 
+  defaultEnd.setDate(today.getDate() + 1); 
 
   const [startDate, setStartDate] = useState(formatDate(today));
   const [endDate, setEndDate] = useState(formatDate(defaultEnd));
@@ -36,10 +37,10 @@ export const GuideSection = () => {
 
   useEffect(() => {
     if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
+      const start = new Date(`${startDate}T00:00:00`);
+      const end = new Date(`${endDate}T00:00:00`);
       const diffTime = end.getTime() - start.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
       
       if (diffDays <= 0) {
         setEndDate(startDate);
@@ -50,7 +51,7 @@ export const GuideSection = () => {
     }
   }, [startDate, endDate]);
 
-  useEffect(() => {
+  const fetchGuides = () => {
     fetch('http://localhost:5000/api/guides')
       .then((res) => res.json())
       .then((data) => {
@@ -61,6 +62,13 @@ export const GuideSection = () => {
         console.error('Gagal memuat data guide:', err);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    fetchGuides();
+    const handleOrderPaid = () => fetchGuides();
+    window.addEventListener('outdoor-order-paid', handleOrderPaid);
+    return () => window.removeEventListener('outdoor-order-paid', handleOrderPaid);
   }, []);
 
   const availableMountains = Array.from(
@@ -77,7 +85,6 @@ export const GuideSection = () => {
         if (!guide.mountain_region) return false;
         if (!guide.mountain_region.toUpperCase().includes(selectedMountain.toUpperCase())) return false;
       }
-      if (onlyVerified && !guide.verified) return false;
       if (searchQuery.trim() !== '') {
         const q = searchQuery.toLowerCase();
         const matchName = guide.name?.toLowerCase().includes(q);
@@ -97,11 +104,22 @@ export const GuideSection = () => {
     });
 
   const handleQuickBookGuide = (guide) => {
+    const check = checkGuideAvailability(guide, startDate, endDate);
+    if (!check.available) {
+      // Buka modal kalender agar user bisa melihat tanggal yang kosong
+      setSelectedGuideForModal(guide);
+      return;
+    }
+
     const totalCost = Number(guide.price_per_day) * days;
     const displayDate = `${startDate.split('-').reverse().join('/')} s/d ${endDate.split('-').reverse().join('/')}`;
 
     addToCart({ 
-      id: `guide-${guide.id}`, 
+      id: `guide-${guide.id}-${startDate}-${endDate}`,
+      guide_id: guide.id,
+      start_date: startDate,
+      end_date: endDate,
+      destination: selectedMountain !== 'ALL' ? selectedMountain : guide.mountain_region,
       type: 'booking', 
       name: `[Booking Guide] ${guide.name} (${days} Hari, ${pax} Org - ${displayDate})`, 
       price: totalCost, 
@@ -118,7 +136,7 @@ export const GuideSection = () => {
         
         <div className="relative z-10 md:w-1/3">
           <h2 className="text-2xl font-bold mb-2">Booking Pemandu Profesional</h2>
-          <p className="text-brand-100 text-sm">Pilih tujuan gunung, tanggal, dan jumlah peserta pendakian Anda di sini.</p>
+          <p className="text-brand-100 text-sm">Pilih tujuan gunung, tanggal pendakian, dan cek kalender ketersediaan setiap pemandu secara langsung.</p>
         </div>
         
         {/* INPUT PILIHAN GUNUNG, TANGGAL & PESERTA */}
@@ -183,7 +201,7 @@ export const GuideSection = () => {
         </div>
       </div>
 
-      {/* BAR FILTER, PENCARIAN & PENGURUTAN GUIDE */}
+      {/* BAR PENCARIAN & PENGURUTAN GUIDE */}
       <div className="bg-white rounded-2xl p-4 mb-6 shadow-sm border border-gray-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
         <div className="relative flex-grow max-w-md">
           <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
@@ -197,18 +215,6 @@ export const GuideSection = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setOnlyVerified(!onlyVerified)}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 ${
-              onlyVerified
-                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-            }`}
-          >
-            <i className="fa-solid fa-circle-check"></i> Hanya Terverifikasi
-          </button>
-
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
@@ -232,79 +238,120 @@ export const GuideSection = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredGuides.map((guide) => (
-            <div key={guide.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col hover:shadow-lg transition relative overflow-hidden group">
-              
-              {guide.verified && (
-                <div className="absolute top-3 right-3 bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider flex items-center gap-1 border border-blue-100">
-                  <i className="fa-solid fa-circle-check"></i> Terverifikasi
-                </div>
-              )}
+          {filteredGuides.map((guide) => {
+            const avail = checkGuideAvailability(guide, startDate, endDate);
+            const workDays = Array.isArray(guide.working_days) && guide.working_days.length > 0 ? guide.working_days : ALL_DAYS;
 
-              <div className="flex items-start gap-4 mb-4">
-                <div className="h-20 w-20 rounded-2xl bg-gray-100 overflow-hidden flex-shrink-0 border-2 border-brand-100 shadow-inner">
-                  <img src={guide.avatar_url || 'https://placehold.co/100x100/15803d/ffffff?text=Guide'} alt={guide.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
-                </div>
-                <div className="pr-4 mt-1">
-                  <h3 className="font-bold text-gray-900 text-base leading-tight">{guide.name}</h3>
-                  <p className="text-xs text-brand-600 font-bold uppercase mb-1.5 line-clamp-1">
-                    <i className="fa-solid fa-mountain text-[10px] mr-1"></i>{guide.mountain_region}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                    <span className="flex items-center gap-1 font-semibold text-gray-700"><i className="fa-solid fa-star text-yellow-400"></i> {guide.rating}</span>
-                    <span>• {guide.experience_years} thn</span>
-                    <span>• {guide.total_trips} trip</span>
-                  </div>
-                </div>
-              </div>
-              
-              {guide.description && (
-                <p className="text-xs text-gray-500 mb-3 line-clamp-2 leading-relaxed">
-                  {guide.description}
-                </p>
-              )}
+            return (
+              <div key={guide.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col hover:shadow-lg transition relative overflow-hidden group">
+                
+                {/* Badge Ketersediaan Tanggal di Pojok Kanan Atas */}
+                <div className="flex justify-between items-center mb-3">
+                  <span
+                    className={`text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1 border ${
+                      avail.available
+                        ? 'bg-green-50 text-green-700 border-green-200'
+                        : 'bg-red-50 text-red-700 border-red-200'
+                    }`}
+                  >
+                    <i className={`fa-solid ${avail.available ? 'fa-calendar-check' : 'fa-calendar-xmark'}`}></i>
+                    {avail.available ? 'Tersedia di Tanggal Pilihan' : 'Jadwal Bentrok / Libur'}
+                  </span>
 
-              {guide.skills && guide.skills.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-4">
-                  {guide.skills.slice(0, 4).map((skill, idx) => (
-                    <span key={idx} className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2.5 py-0.5 rounded-full font-medium">{skill}</span>
-                  ))}
-                  {guide.skills.length > 4 && <span className="bg-brand-50 text-brand-700 border border-brand-100 text-[10px] px-2.5 py-0.5 rounded-full font-bold">+{guide.skills.length - 4}</span>}
-                </div>
-              )}
-              
-              <div className="mt-auto pt-4 border-t border-dashed border-gray-200 flex justify-between items-center gap-2">
-                <div>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase">Total Tarif ({days} Hari)</p>
-                  <p className="text-base font-black text-brand-700">Rp {(Number(guide.price_per_day) * days).toLocaleString('id-ID')}</p>
-                </div>
-                <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setSelectedGuideForModal(guide)}
-                    title="Pilih Opsi Tambahan (Porter / Dokumentasi)"
-                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 transition px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center gap-1"
                   >
-                    <i className="fa-solid fa-sliders"></i> Opsi
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => handleQuickBookGuide(guide)}
-                    className="bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white transition px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm"
-                  >
-                    <i className="fa-solid fa-calendar-check"></i> Booking
+                    <i className="fa-regular fa-calendar-days"></i> Lihat Kalender
                   </button>
                 </div>
+
+                <div className="flex items-start gap-4 mb-3">
+                  <div className="h-20 w-20 rounded-2xl bg-gray-100 overflow-hidden flex-shrink-0 border-2 border-brand-100 shadow-inner">
+                    <img src={guide.avatar_url || 'https://placehold.co/100x100/15803d/ffffff?text=Guide'} alt={guide.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
+                  </div>
+                  <div className="min-w-0 mt-0.5">
+                    <h3 className="font-bold text-gray-900 text-base leading-tight truncate">{guide.name}</h3>
+                    <p className="text-xs text-brand-600 font-bold uppercase mb-1.5 line-clamp-1">
+                      <i className="fa-solid fa-mountain text-[10px] mr-1"></i>{guide.mountain_region}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+                      <span className="flex items-center gap-1 font-bold text-gray-800 bg-yellow-50 border border-yellow-200 px-2 py-0.5 rounded-md">
+                        <i className="fa-solid fa-star text-yellow-400"></i> {guide.rating}
+                        <span className="text-[10px] text-gray-400 font-normal">({guide.review_count || 0})</span>
+                      </span>
+                      <span>• {guide.experience_years} thn</span>
+                      <span>• {guide.total_trips} trip</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Info Hari Kerja Guide */}
+                <div className="mb-3 bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-100 flex items-center justify-between text-[11px]">
+                  <span className="text-gray-500 font-semibold">
+                    <i className="fa-solid fa-briefcase text-brand-600 mr-1"></i>Hari Kerja:
+                  </span>
+                  <span className="font-bold text-gray-700 truncate ml-2">
+                    {workDays.length === 7 ? 'Setiap Hari (Sen–Min)' : workDays.map(d => d.slice(0, 3)).join(', ')}
+                  </span>
+                </div>
+
+                {guide.description && (
+                  <p className="text-xs text-gray-500 mb-3 line-clamp-2 leading-relaxed">
+                    {guide.description}
+                  </p>
+                )}
+                
+                {guide.skills && guide.skills.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-4">
+                    {guide.skills.slice(0, 4).map((skill, idx) => (
+                      <span key={idx} className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2.5 py-0.5 rounded-full font-medium">{skill}</span>
+                    ))}
+                    {guide.skills.length > 4 && <span className="bg-brand-50 text-brand-700 border border-brand-100 text-[10px] px-2.5 py-0.5 rounded-full font-bold">+{guide.skills.length - 4}</span>}
+                  </div>
+                )}
+                
+                <div className="mt-auto pt-4 border-t border-dashed border-gray-200 flex justify-between items-center gap-2">
+                  <div>
+                    <p className="text-[10px] text-gray-400 font-bold uppercase">Total Tarif ({days} Hari)</p>
+                    <p className="text-base font-black text-brand-700">Rp {(Number(guide.price_per_day) * days).toLocaleString('id-ID')}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedGuideForModal(guide)}
+                      title="Lihat Kalender Ketersediaan, Ulasan & Opsi Tambahan"
+                      className="bg-gray-100 hover:bg-gray-200 text-gray-700 transition px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                    >
+                      <i className="fa-regular fa-calendar-days"></i> Kalender & Opsi
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => handleQuickBookGuide(guide)}
+                      className={`transition px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm ${
+                        avail.available
+                          ? 'bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white'
+                          : 'bg-orange-50 hover:bg-orange-500 text-orange-700 hover:text-white'
+                      }`}
+                    >
+                      <i className="fa-solid fa-calendar-check"></i> {avail.available ? 'Booking' : 'Cek Jadwal'}
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* MODAL KONFIGURASI BOOKING & PORTER/DOKUMENTASI */}
+      {/* MODAL KALENDER, ULASAN & KONFIGURASI BOOKING */}
       <BookingModal
         isOpen={Boolean(selectedGuideForModal)}
-        onClose={() => setSelectedGuideForModal(null)}
+        onClose={() => {
+          setSelectedGuideForModal(null);
+          fetchGuides();
+        }}
         guide={selectedGuideForModal}
         initialStartDate={startDate}
         initialEndDate={endDate}

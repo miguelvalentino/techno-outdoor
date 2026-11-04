@@ -1,8 +1,10 @@
 // src/pages/AdminPage.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { AdminOrders } from '../components/AdminOrders';
+import { ImageCropModal } from '../components/ImageCropModal';
+import { GuideCalendar } from '../components/GuideCalendar';
 
 const PRESET_MOUNTAINS = [
   'Gede Pangrango',
@@ -26,6 +28,8 @@ const PRESET_SKILLS = [
   'Porter Support'
 ];
 
+const ALL_DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
 export const AdminPage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -38,7 +42,7 @@ export const AdminPage = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({
-    name: '', category: 'TENDA', price: '', stock: '', image_url: '', description: '', is_rentable: false, rent_price_per_day: ''
+    name: '', category: 'TENDA', price: '', stock: '', rent_stock: '0', image_url: '', description: '', is_rentable: false, rent_price_per_day: ''
   });
 
   // --- STATE BUNDLING ---
@@ -63,7 +67,6 @@ export const AdminPage = () => {
   const [isEditingGuide, setIsEditingGuide] = useState(false);
   const [editGuideId, setEditGuideId] = useState(null);
   const [guideSearch, setGuideSearch] = useState('');
-  const [guideFilterVerified, setGuideFilterVerified] = useState('ALL');
   const [customSkillInput, setCustomSkillInput] = useState('');
   const [guideForm, setGuideForm] = useState({
     name: '',
@@ -73,9 +76,24 @@ export const AdminPage = () => {
     rating: '5.0',
     total_trips: '0',
     experience_years: '1',
-    verified: true,
     skills: ['First Aid / P3K', 'Navigasi Darat'],
+    working_days: [...ALL_DAYS],
     avatar_url: ''
+  });
+
+  // --- STATE UPLOAD & CROP FOTO ---
+  const guideFileInputRef = useRef(null);
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [rawImageToCrop, setRawImageToCrop] = useState('');
+
+  // --- STATE MODAL KALENDER JADWAL PEMANDU (ADMIN) ---
+  const [scheduleModalGuide, setScheduleModalGuide] = useState(null);
+  const [newScheduleForm, setNewScheduleForm] = useState({
+    start_date: '',
+    end_date: '',
+    destination: '',
+    customer_name: '',
+    note: ''
   });
 
   useEffect(() => {
@@ -102,7 +120,14 @@ export const AdminPage = () => {
 
     fetch('http://localhost:5000/api/guides')
       .then(res => res.json())
-      .then(data => setGuides(Array.isArray(data) ? data : []))
+      .then(data => {
+        const list = Array.isArray(data) ? data : [];
+        setGuides(list);
+        if (scheduleModalGuide) {
+          const updated = list.find(g => g.id === scheduleModalGuide.id);
+          if (updated) setScheduleModalGuide(updated);
+        }
+      })
       .catch(err => console.error('Gagal memuat data pemandu:', err));
   };
 
@@ -138,7 +163,8 @@ export const AdminPage = () => {
     setIsEditing(true);
     setEditId(product.id);
     setForm({
-      name: product.name, category: product.category, price: product.price, stock: product.stock, 
+      name: product.name, category: product.category, price: product.price, stock: product.stock ?? 0,
+      rent_stock: product.rent_stock ?? 0,
       image_url: product.image_url || '', description: product.description || '', 
       is_rentable: product.is_rentable || false, rent_price_per_day: product.rent_price_per_day || ''
     });
@@ -148,7 +174,24 @@ export const AdminPage = () => {
   const handleReset = () => {
     setIsEditing(false);
     setEditId(null);
-    setForm({ name: '', category: 'TENDA', price: '', stock: '', image_url: '', description: '', is_rentable: false, rent_price_per_day: '' });
+    setForm({ name: '', category: 'TENDA', price: '', stock: '', rent_stock: '0', image_url: '', description: '', is_rentable: false, rent_price_per_day: '' });
+  };
+
+  const handleQuickAdjustStock = async (product, field, delta) => {
+    const currentVal = Number(product[field] ?? 0);
+    const nextVal = Math.max(0, currentVal + delta);
+    try {
+      const response = await fetch(`http://localhost:5000/api/admin/products/${product.id}/stock`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: nextVal })
+      });
+      if (response.ok) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Gagal update stok cepat:', err);
+    }
   };
 
   const handleDelete = async (id) => {
@@ -241,6 +284,40 @@ export const AdminPage = () => {
     setCustomSkillInput('');
   };
 
+  const handleToggleWorkingDay = (dayName) => {
+    const exists = guideForm.working_days.includes(dayName);
+    if (exists && guideForm.working_days.length <= 1) {
+      alert('Pemandu minimal harus memiliki 1 hari kerja aktif.');
+      return;
+    }
+    const nextDays = exists
+      ? guideForm.working_days.filter(d => d !== dayName)
+      : ALL_DAYS.filter(d => guideForm.working_days.includes(d) || d === dayName);
+    setGuideForm({ ...guideForm, working_days: nextDays });
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Mohon pilih file gambar (JPG, PNG, WEBP).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setRawImageToCrop(reader.result);
+      setCropModalOpen(true);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleOpenCropExisting = () => {
+    if (!guideForm.avatar_url) return;
+    setRawImageToCrop(guideForm.avatar_url);
+    setCropModalOpen(true);
+  };
+
   const handleGuideSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -260,7 +337,8 @@ export const AdminPage = () => {
         handleGuideReset();
         fetchData();
       } else {
-        alert('Gagal menyimpan data pemandu. Periksa kembali isian Anda.');
+        const errData = await response.json().catch(() => ({}));
+        alert(errData.error || 'Gagal menyimpan data pemandu. Periksa kembali isian Anda.');
       }
     } catch (err) {
       console.error('Error submit guide:', err);
@@ -278,8 +356,8 @@ export const AdminPage = () => {
       rating: guide.rating || '5.0',
       total_trips: guide.total_trips ?? '0',
       experience_years: guide.experience_years ?? '1',
-      verified: guide.verified !== undefined ? guide.verified : true,
       skills: Array.isArray(guide.skills) ? guide.skills : [],
+      working_days: Array.isArray(guide.working_days) && guide.working_days.length > 0 ? guide.working_days : [...ALL_DAYS],
       avatar_url: guide.avatar_url || ''
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -297,8 +375,8 @@ export const AdminPage = () => {
       rating: '5.0',
       total_trips: '0',
       experience_years: '1',
-      verified: true,
       skills: ['First Aid / P3K', 'Navigasi Darat'],
+      working_days: [...ALL_DAYS],
       avatar_url: ''
     });
   };
@@ -310,32 +388,54 @@ export const AdminPage = () => {
     }
   };
 
-  const handleQuickToggleVerify = async (guide) => {
+  // --- HANDLERS JADWAL KALENDER PEMANDU (ADMIN) ---
+  const handleAddGuideSchedule = async (e) => {
+    e.preventDefault();
+    if (!scheduleModalGuide) return;
+    if (!newScheduleForm.start_date) {
+      alert('Pilih tanggal mulai terlebih dahulu.');
+      return;
+    }
+
     try {
-      const response = await fetch(`http://localhost:5000/api/admin/guides/${guide.id}/verify`, {
-        method: 'PATCH',
+      const response = await fetch(`http://localhost:5000/api/admin/guides/${scheduleModalGuide.id}/schedules`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ verified: !guide.verified })
+        body: JSON.stringify({
+          ...newScheduleForm,
+          end_date: newScheduleForm.end_date || newScheduleForm.start_date
+        })
+      });
+      if (response.ok) {
+        setNewScheduleForm({ start_date: '', end_date: '', destination: '', customer_name: '', note: '' });
+        fetchData();
+      } else {
+        alert('Gagal menambahkan jadwal ke kalender.');
+      }
+    } catch (err) {
+      console.error('Error add schedule:', err);
+    }
+  };
+
+  const handleDeleteGuideSchedule = async (scheduleId) => {
+    if (!confirm('Hapus tanda booking tanggal ini dari kalender pemandu?')) return;
+    try {
+      const response = await fetch(`http://localhost:5000/api/admin/guides/schedules/${scheduleId}`, {
+        method: 'DELETE'
       });
       if (response.ok) {
         fetchData();
       }
     } catch (err) {
-      console.error('Gagal mengubah verifikasi:', err);
+      console.error('Error delete schedule:', err);
     }
   };
 
   const filteredGuides = guides.filter((g) => {
-    const matchSearch =
+    return (
       g.name?.toLowerCase().includes(guideSearch.toLowerCase()) ||
-      g.mountain_region?.toLowerCase().includes(guideSearch.toLowerCase());
-    const matchVerify =
-      guideFilterVerified === 'ALL'
-        ? true
-        : guideFilterVerified === 'VERIFIED'
-          ? Boolean(g.verified)
-          : !g.verified;
-    return matchSearch && matchVerify;
+      g.mountain_region?.toLowerCase().includes(guideSearch.toLowerCase())
+    );
   });
 
   if (!user || user.role !== 'admin') return null;
@@ -423,8 +523,8 @@ export const AdminPage = () => {
                 <option value="TENDA">TENDA</option><option value="TAS / CARRIER">TAS / CARRIER</option><option value="MEMASAK">MEMASAK</option><option value="TIDUR">TIDUR</option>
               </select>
             </div>
-            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga (Rp)</label><input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
-            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Stok</label><input type="number" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
+            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Jual (Rp)</label><input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
+            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Stok Jual (Unit)</label><input type="number" min="0" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div className="sm:col-span-2"><label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Gambar</label><input type="text" value={form.image_url} onChange={e => setForm({...form, image_url: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div className="sm:col-span-2">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Deskripsi Produk</label>
@@ -434,12 +534,18 @@ export const AdminPage = () => {
             <div className="sm:col-span-2 border-t border-dashed border-gray-200 mt-2 pt-4">
               <label className="flex items-center gap-3 cursor-pointer mb-4">
                 <input type="checkbox" checked={form.is_rentable} onChange={e => setForm({...form, is_rentable: e.target.checked})} className="w-5 h-5 text-brand-600 rounded border-gray-300 focus:ring-brand-500" />
-                <span className="font-bold text-gray-700">Produk ini bisa disewakan</span>
+                <span className="font-bold text-gray-700">Produk ini bisa disewakan (Memiliki Stok Sewa Terpisah)</span>
               </label>
               {form.is_rentable && (
-                <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 fade-in">
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Sewa Per Hari (Rp)</label>
-                  <input type="number" required={form.is_rentable} value={form.rent_price_per_day} onChange={e => setForm({...form, rent_price_per_day: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
+                <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 grid sm:grid-cols-2 gap-4 fade-in">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga Sewa Per Hari (Rp)</label>
+                    <input type="number" min="0" required={form.is_rentable} value={form.rent_price_per_day} onChange={e => setForm({...form, rent_price_per_day: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-orange-700 uppercase mb-1">Stok Khusus Sewa (Unit)</label>
+                    <input type="number" min="0" required={form.is_rentable} value={form.rent_stock} onChange={e => setForm({...form, rent_stock: e.target.value})} className="w-full bg-white border border-orange-200 rounded-xl px-4 py-2.5 outline-none focus:border-orange-500 font-bold text-orange-800" />
+                  </div>
                 </div>
               )}
             </div>
@@ -454,16 +560,29 @@ export const AdminPage = () => {
 
           {/* Tabel Produk */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4 flex justify-between items-center">
-              Daftar Produk di Database <span className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-medium">{products.length} Item</span>
-            </h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                  Daftar Produk & Manajemen Stok Terpisah
+                  <span className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-full font-medium">{products.length} Item</span>
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">Stok Beli (Jual) dan Stok Sewa dipisahkan. Gunakan tombol <b>- / +</b> untuk menyesuaikan stok gudang secara instan.</p>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm text-gray-600">
                 <thead className="bg-gray-50 text-gray-700 uppercase text-xs">
-                  <tr><th className="p-3">Nama</th><th className="p-3">Kategori</th><th className="p-3">Harga</th><th className="p-3">Stok</th><th className="p-3 text-center">Aksi</th></tr>
+                  <tr>
+                    <th className="p-3">Nama Produk</th>
+                    <th className="p-3">Kategori</th>
+                    <th className="p-3">Harga Jual & Sewa</th>
+                    <th className="p-3 text-center">Stok Jual (Beli)</th>
+                    <th className="p-3 text-center">Stok Sewa</th>
+                    <th className="p-3 text-center">Aksi</th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {products.length === 0 ? <tr><td colSpan="5" className="p-6 text-center text-gray-400">Belum ada produk.</td></tr> : products.map(p => (
+                  {products.length === 0 ? <tr><td colSpan="6" className="p-6 text-center text-gray-400">Belum ada produk.</td></tr> : products.map(p => (
                     <tr key={p.id} className="hover:bg-brand-50/50 transition">
                       <td className="p-3 font-semibold text-gray-800 flex items-center gap-3">
                         <div className="h-10 w-10 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
@@ -471,16 +590,72 @@ export const AdminPage = () => {
                         </div>
                         <div>
                           {p.name}
-                          {p.is_rentable && <span className="ml-2 bg-orange-100 text-orange-600 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Sewa</span>}
+                          {p.is_rentable && <span className="ml-2 bg-orange-100 text-orange-600 text-[10px] px-1.5 py-0.5 rounded uppercase font-bold">Disewakan</span>}
                         </div>
                       </td>
                       <td className="p-3">{p.category}</td>
-                      <td className="p-3 text-brand-700 font-bold">Rp {Number(p.price).toLocaleString('id-ID')}</td>
-                      <td className="p-3"><span className={`px-2 py-1 rounded-full text-xs font-bold ${p.stock > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{p.stock}</span></td>
+                      <td className="p-3">
+                        <div className="text-brand-700 font-bold">Jual: Rp {Number(p.price).toLocaleString('id-ID')}</div>
+                        {p.is_rentable && (
+                          <div className="text-xs text-orange-600 font-semibold mt-0.5">
+                            Sewa: Rp {Number(p.rent_price_per_day || 0).toLocaleString('id-ID')}/hr
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="inline-flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl p-1">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAdjustStock(p, 'stock', -1)}
+                            className="h-6 w-6 rounded-lg bg-white hover:bg-gray-200 text-gray-700 font-bold text-xs border border-gray-200 transition"
+                            title="Kurangi Stok Jual"
+                          >
+                            -
+                          </button>
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold min-w-[32px] text-center ${Number(p.stock) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                            {p.stock ?? 0}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAdjustStock(p, 'stock', 1)}
+                            className="h-6 w-6 rounded-lg bg-white hover:bg-brand-600 hover:text-white text-gray-700 font-bold text-xs border border-gray-200 transition"
+                            title="Tambah Stok Jual"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center">
+                        {p.is_rentable ? (
+                          <div className="inline-flex items-center gap-1.5 bg-orange-50/60 border border-orange-200 rounded-xl p-1">
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustStock(p, 'rent_stock', -1)}
+                              className="h-6 w-6 rounded-lg bg-white hover:bg-orange-200 text-orange-700 font-bold text-xs border border-orange-200 transition"
+                              title="Kurangi Stok Sewa"
+                            >
+                              -
+                            </button>
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold min-w-[32px] text-center ${Number(p.rent_stock ?? 0) > 0 ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-600'}`}>
+                              {p.rent_stock ?? 0}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustStock(p, 'rent_stock', 1)}
+                              className="h-6 w-6 rounded-lg bg-white hover:bg-orange-500 hover:text-white text-orange-700 font-bold text-xs border border-orange-200 transition"
+                              title="Tambah Stok Sewa"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400 italic">Tidak disewakan</span>
+                        )}
+                      </td>
                       <td className="p-3 text-center">
                         <div className="flex justify-center gap-2">
-                          <button onClick={() => handleEditClick(p)} className="bg-orange-50 text-orange-600 hover:bg-orange-100 h-8 w-8 rounded-lg transition"><i className="fa-solid fa-pen"></i></button>
-                          <button onClick={() => handleDelete(p.id)} className="bg-red-50 text-red-600 hover:bg-red-100 h-8 w-8 rounded-lg transition"><i className="fa-solid fa-trash"></i></button>
+                          <button onClick={() => handleEditClick(p)} className="bg-orange-50 text-orange-600 hover:bg-orange-100 h-8 w-8 rounded-lg transition" title="Edit Produk"><i className="fa-solid fa-pen"></i></button>
+                          <button onClick={() => handleDelete(p.id)} className="bg-red-50 text-red-600 hover:bg-red-100 h-8 w-8 rounded-lg transition" title="Hapus Produk"><i className="fa-solid fa-trash"></i></button>
                         </div>
                       </td>
                     </tr>
@@ -593,7 +768,7 @@ export const AdminPage = () => {
                   {isEditingGuide ? 'Edit Profil Pemandu' : 'Tambah Pemandu Gunung Baru'}
                 </h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Lengkapi informasi pemandu profesional, wilayah gunung spesialisasi, sertifikasi keahlian, dan tarif harian.
+                  Lengkapi informasi pemandu, foto profil (bisa unggah file & crop), wilayah gunung, jadwal hari kerja, serta tarif harian.
                 </p>
               </div>
               {isEditingGuide && (
@@ -668,10 +843,10 @@ export const AdminPage = () => {
               </div>
             </div>
 
-            {/* Pengalaman, Total Trip, Rating */}
-            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Pengalaman & Total Trip (Rating otomatis dari ulasan pelanggan) */}
+            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Pengalaman (Tahun)</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Pengalaman Mendaki (Tahun)</label>
                 <input
                   type="number"
                   min="0"
@@ -683,7 +858,7 @@ export const AdminPage = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Total Trip Selesai</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Total Trip Selesai Awal</label>
                 <input
                   type="number"
                   min="0"
@@ -693,19 +868,66 @@ export const AdminPage = () => {
                   className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
                 />
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Rating Pemandu (1.0 - 5.0)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="1"
-                  max="5"
-                  required
-                  value={guideForm.rating}
-                  onChange={(e) => setGuideForm({ ...guideForm, rating: e.target.value })}
-                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
-                />
+            {/* PEMILIHAN HARI KERJA PEMANDU */}
+            <div className="sm:col-span-2 border-t border-dashed border-gray-200 pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase">
+                    <i className="fa-solid fa-calendar-check text-brand-600 mr-1"></i>
+                    Hari Kerja Aktif Pemandu ({guideForm.working_days.length} Hari / Minggu)
+                  </label>
+                  <p className="text-[11px] text-gray-400">
+                    Pilih hari di mana pemandu ini bersedia menerima jadwal pendakian.
+                  </p>
+                </div>
+
+                {/* Preset Hari Kerja */}
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setGuideForm({ ...guideForm, working_days: [...ALL_DAYS] })}
+                    className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-brand-50 text-brand-700 hover:bg-brand-100 transition"
+                  >
+                    Setiap Hari
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGuideForm({ ...guideForm, working_days: ['Jumat', 'Sabtu', 'Minggu'] })}
+                    className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-orange-50 text-orange-700 hover:bg-orange-100 transition"
+                  >
+                    Weekend (Jum–Min)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGuideForm({ ...guideForm, working_days: ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'] })}
+                    className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 transition"
+                  >
+                    Weekday (Sen–Jum)
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-7 gap-2 mt-2">
+                {ALL_DAYS.map((dayName) => {
+                  const isActive = guideForm.working_days.includes(dayName);
+                  return (
+                    <button
+                      type="button"
+                      key={dayName}
+                      onClick={() => handleToggleWorkingDay(dayName)}
+                      className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition flex items-center justify-center gap-1.5 ${
+                        isActive
+                          ? 'bg-brand-600 text-white border-brand-600 shadow-sm'
+                          : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100'
+                      }`}
+                    >
+                      <i className={`fa-solid ${isActive ? 'fa-circle-check text-[10px]' : 'fa-xmark text-[10px]'}`}></i>
+                      {dayName}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -723,29 +945,74 @@ export const AdminPage = () => {
               />
             </div>
 
-            {/* URL Foto Avatar + Preview */}
-            <div className="sm:col-span-2 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-              <div className="flex-grow w-full">
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Foto Profil / Avatar</label>
-                <input
-                  type="text"
-                  placeholder="https://images.unsplash.com/..."
-                  value={guideForm.avatar_url}
-                  onChange={(e) => setGuideForm({ ...guideForm, avatar_url: e.target.value })}
-                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
-                />
-              </div>
-              <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-2 flex-shrink-0">
-                <div className="h-12 w-12 rounded-xl bg-brand-100 overflow-hidden border border-brand-200 flex items-center justify-center flex-shrink-0">
-                  {guideForm.avatar_url ? (
-                    <img src={guideForm.avatar_url} alt="Preview" className="h-full w-full object-cover" />
-                  ) : (
-                    <i className="fa-solid fa-person-hiking text-brand-600 text-lg"></i>
-                  )}
+            {/* FOTO PROFIL: LINK URL ATAU UPLOAD FILE + FITUR CROP MANUAL */}
+            <div className="sm:col-span-2 border-t border-dashed border-gray-200 pt-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
+                Foto Profil Pemandu (Gunakan Link URL atau Upload File & Crop)
+              </label>
+              <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4">
+                <div className="flex-grow space-y-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      placeholder="Tempel link URL gambar (https://...) atau unggah file di samping ->"
+                      value={guideForm.avatar_url?.startsWith('data:image') ? '' : guideForm.avatar_url}
+                      onChange={(e) => setGuideForm({ ...guideForm, avatar_url: e.target.value })}
+                      className="flex-grow bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand-500"
+                    />
+                    <input
+                      ref={guideFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileSelect}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => guideFileInputRef.current?.click()}
+                      className="bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 font-bold px-4 py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2 whitespace-nowrap"
+                    >
+                      <i className="fa-solid fa-upload"></i> Upload File Foto
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-400">
+                    Saat memilih file foto dari komputer, jendela <strong>Crop Manual</strong> akan otomatis terbuka agar Anda bisa menyesuaikan posisi wajah pemandu.
+                  </p>
                 </div>
-                <div className="text-xs">
-                  <p className="font-bold text-gray-700">Preview Avatar</p>
-                  <p className="text-gray-400 text-[11px]">{guideForm.name || 'Nama Pemandu'}</p>
+
+                {/* Kotak Preview Avatar + Tombol Crop Ulang / Hapus */}
+                <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-2xl p-3 flex-shrink-0">
+                  <div className="h-16 w-16 rounded-2xl bg-brand-100 overflow-hidden border-2 border-brand-200 flex items-center justify-center flex-shrink-0">
+                    {guideForm.avatar_url ? (
+                      <img src={guideForm.avatar_url} alt="Preview" className="h-full w-full object-cover" />
+                    ) : (
+                      <i className="fa-solid fa-person-hiking text-brand-600 text-2xl"></i>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <p className="font-bold text-gray-700 text-xs">Preview Foto</p>
+                    {guideForm.avatar_url ? (
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleOpenCropExisting}
+                          className="bg-white hover:bg-brand-50 text-brand-700 border border-gray-200 text-[11px] font-bold px-2.5 py-1 rounded-lg transition flex items-center gap-1"
+                        >
+                          <i className="fa-solid fa-crop-simple"></i> Crop
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGuideForm({ ...guideForm, avatar_url: '' })}
+                          className="bg-white hover:bg-red-50 text-red-600 border border-gray-200 text-[11px] font-bold px-2.5 py-1 rounded-lg transition"
+                          title="Hapus Foto"
+                        >
+                          <i className="fa-solid fa-trash-can"></i>
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-gray-400">Belum ada foto</span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -826,29 +1093,6 @@ export const AdminPage = () => {
               )}
             </div>
 
-            {/* Status Verifikasi */}
-            <div className="sm:col-span-2 border-t border-dashed border-gray-200 pt-4">
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={guideForm.verified}
-                  onChange={(e) => setGuideForm({ ...guideForm, verified: e.target.checked })}
-                  className="w-5 h-5 text-brand-600 rounded border-gray-300 focus:ring-brand-500"
-                />
-                <div>
-                  <span className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
-                    Pemandu Terverifikasi Resmi
-                    <span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-md border border-blue-100 uppercase">
-                      <i className="fa-solid fa-circle-check mr-1"></i>Terverifikasi
-                    </span>
-                  </span>
-                  <span className="block text-xs text-gray-500">
-                    Pemandu telah lulus seleksi lisensi & keamanan standar Outdoor Warrent.
-                  </span>
-                </div>
-              </label>
-            </div>
-
             {/* Tombol Submit / Batal */}
             <div className="sm:col-span-2 flex gap-3 mt-2">
               <button
@@ -879,35 +1123,24 @@ export const AdminPage = () => {
                 <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                   Daftar Pemandu Gunung Terdaftar
                   <span className="text-xs bg-brand-50 text-brand-700 px-3 py-1 rounded-full font-bold">
-                    {filteredGuides.length} dari {guides.length} Guide
+                    {filteredGuides.length} Guide
                   </span>
                 </h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Klik lencana status untuk mengubah verifikasi pemandu secara instan, atau klik tombol aksi untuk mengedit/menghapus.
+                  Pantau jadwal kalender booking, hari kerja aktif, ulasan pelanggan, atau perbarui profil pemandu.
                 </p>
               </div>
 
-              {/* Filter & Pencarian Pemandu */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
-                  <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
-                  <input
-                    type="text"
-                    placeholder="Cari nama / gunung..."
-                    value={guideSearch}
-                    onChange={(e) => setGuideSearch(e.target.value)}
-                    className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-xl outline-none focus:border-brand-500 bg-gray-50 focus:bg-white transition"
-                  />
-                </div>
-                <select
-                  value={guideFilterVerified}
-                  onChange={(e) => setGuideFilterVerified(e.target.value)}
-                  className="text-xs font-bold border border-gray-200 rounded-xl px-3 py-2 outline-none focus:border-brand-500 bg-white text-gray-700"
-                >
-                  <option value="ALL">Semua Status</option>
-                  <option value="VERIFIED">Terverifikasi</option>
-                  <option value="UNVERIFIED">Belum Verifikasi</option>
-                </select>
+              {/* Pencarian Pemandu */}
+              <div className="relative">
+                <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                <input
+                  type="text"
+                  placeholder="Cari nama / gunung..."
+                  value={guideSearch}
+                  onChange={(e) => setGuideSearch(e.target.value)}
+                  className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-xl outline-none focus:border-brand-500 bg-gray-50 focus:bg-white transition w-full sm:w-64"
+                />
               </div>
             </div>
 
@@ -917,10 +1150,10 @@ export const AdminPage = () => {
                   <tr>
                     <th className="p-3">Profil Pemandu</th>
                     <th className="p-3">Gunung Spesialisasi</th>
-                    <th className="p-3">Statistik & Rekam Jejak</th>
-                    <th className="p-3">Keahlian</th>
+                    <th className="p-3">Hari Kerja</th>
+                    <th className="p-3">Rating & Rekam Jejak</th>
                     <th className="p-3">Tarif / Hari</th>
-                    <th className="p-3 text-center">Status</th>
+                    <th className="p-3 text-center">Kalender Jadwal</th>
                     <th className="p-3 text-center">Aksi</th>
                   </tr>
                 </thead>
@@ -948,7 +1181,7 @@ export const AdminPage = () => {
                               <p className="font-bold text-gray-900">{g.name}</p>
                               <p className="text-[11px] text-gray-400">ID: #GDE-{g.id}</p>
                               {g.description && (
-                                <p className="text-[11px] text-gray-500 line-clamp-1 max-w-[220px] mt-0.5">{g.description}</p>
+                                <p className="text-[11px] text-gray-500 line-clamp-1 max-w-[200px] mt-0.5">{g.description}</p>
                               )}
                             </div>
                           </div>
@@ -972,31 +1205,31 @@ export const AdminPage = () => {
                           </div>
                         </td>
 
+                        <td className="p-3">
+                          <div className="flex flex-wrap gap-1 max-w-[180px]">
+                            {(Array.isArray(g.working_days) && g.working_days.length > 0 ? g.working_days : ALL_DAYS).length === 7 ? (
+                              <span className="bg-green-50 text-green-700 border border-green-200 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                                Setiap Hari (Sen–Min)
+                              </span>
+                            ) : (
+                              (g.working_days || []).map((d, idx) => (
+                                <span key={idx} className="bg-gray-100 text-gray-700 text-[10px] font-semibold px-2 py-0.5 rounded-md">
+                                  {d.slice(0, 3)}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </td>
+
                         <td className="p-3 whitespace-nowrap">
                           <div className="flex items-center gap-2 text-xs">
                             <span className="font-bold text-gray-800 flex items-center gap-1 bg-yellow-50 border border-yellow-200 px-2 py-0.5 rounded-md">
                               <i className="fa-solid fa-star text-yellow-400"></i> {g.rating}
+                              <span className="text-[10px] text-gray-400 font-normal">({g.review_count || 0} ulasan)</span>
                             </span>
                             <span className="text-gray-500">{g.experience_years} thn</span>
                             <span className="text-gray-400">•</span>
                             <span className="text-gray-500">{g.total_trips} trip</span>
-                          </div>
-                        </td>
-
-                        <td className="p-3 max-w-xs">
-                          <div className="flex flex-wrap gap-1">
-                            {Array.isArray(g.skills) && g.skills.length > 0 ? (
-                              g.skills.map((skill, idx) => (
-                                <span
-                                  key={idx}
-                                  className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2 py-0.5 rounded-full font-medium"
-                                >
-                                  {skill}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="text-xs text-gray-400 italic">-</span>
-                            )}
                           </div>
                         </td>
 
@@ -1009,23 +1242,11 @@ export const AdminPage = () => {
                         <td className="p-3 text-center whitespace-nowrap">
                           <button
                             type="button"
-                            onClick={() => handleQuickToggleVerify(g)}
-                            title="Klik untuk mengubah status verifikasi"
-                            className={`text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider border transition ${
-                              g.verified
-                                ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
-                                : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
-                            }`}
+                            onClick={() => setScheduleModalGuide(g)}
+                            className="bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white border border-brand-200 text-xs font-bold px-3 py-1.5 rounded-xl transition inline-flex items-center gap-1.5"
                           >
-                            {g.verified ? (
-                              <>
-                                <i className="fa-solid fa-circle-check mr-1"></i>Terverifikasi
-                              </>
-                            ) : (
-                              <>
-                                <i className="fa-regular fa-clock mr-1"></i>Belum Verifikasi
-                              </>
-                            )}
+                            <i className="fa-regular fa-calendar-days"></i>
+                            <span>Kalender ({(g.schedules || []).length})</span>
                           </button>
                         </td>
 
@@ -1054,6 +1275,127 @@ export const AdminPage = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CROP FOTO PEMANDU */}
+      <ImageCropModal
+        isOpen={cropModalOpen}
+        imageSrc={rawImageToCrop}
+        onClose={() => setCropModalOpen(false)}
+        onCropComplete={(croppedDataUrl) => setGuideForm({ ...guideForm, avatar_url: croppedDataUrl })}
+      />
+
+      {/* MODAL KALENDER & JADWAL PEMANDU (ADMIN) */}
+      {scheduleModalGuide && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 fade-in">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100 mb-5">
+              <div className="flex items-center gap-3">
+                <img
+                  src={scheduleModalGuide.avatar_url || 'https://placehold.co/100x100/15803d/ffffff?text=Guide'}
+                  alt={scheduleModalGuide.name}
+                  className="h-12 w-12 rounded-xl object-cover border border-brand-200"
+                />
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    Kalender & Jadwal Booking: {scheduleModalGuide.name}
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Kelola tanggal ketika pemandu sedang bertugas atau tandai tanggal booking manual.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setScheduleModalGuide(null)}
+                className="h-9 w-9 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              {/* Kalender Visual */}
+              <GuideCalendar
+                schedules={scheduleModalGuide.schedules || []}
+                workingDays={scheduleModalGuide.working_days || ALL_DAYS}
+                isAdmin={true}
+                onDeleteSchedule={handleDeleteGuideSchedule}
+              />
+
+              {/* Form Tambah Tanda Tanggal Booking Manual */}
+              <form onSubmit={handleAddGuideSchedule} className="bg-gray-50 p-4 rounded-2xl border border-gray-200 space-y-3">
+                <h4 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+                  <i className="fa-solid fa-calendar-plus text-brand-600"></i>
+                  Tandai Tanggal Sudah Dibooking
+                </h4>
+                <p className="text-[11px] text-gray-500">
+                  Pesanan dari pelanggan otomatis masuk ke kalender. Gunakan form ini jika ingin memblokir tanggal tambahan secara manual.
+                </p>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Dari Tanggal</label>
+                    <input
+                      type="date"
+                      required
+                      value={newScheduleForm.start_date}
+                      onChange={(e) =>
+                        setNewScheduleForm({
+                          ...newScheduleForm,
+                          start_date: e.target.value,
+                          end_date: newScheduleForm.end_date || e.target.value
+                        })
+                      }
+                      className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Sampai Tanggal</label>
+                    <input
+                      type="date"
+                      required
+                      min={newScheduleForm.start_date}
+                      value={newScheduleForm.end_date}
+                      onChange={(e) => setNewScheduleForm({ ...newScheduleForm, end_date: e.target.value })}
+                      className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Gunung / Kegiatan</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: Pendakian Rinjani 4D3N"
+                    value={newScheduleForm.destination}
+                    onChange={(e) => setNewScheduleForm({ ...newScheduleForm, destination: e.target.value })}
+                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Nama Penyewa / Keterangan</label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: Rombongan Andi / Cuti Pribadi"
+                    value={newScheduleForm.customer_name}
+                    onChange={(e) => setNewScheduleForm({ ...newScheduleForm, customer_name: e.target.value })}
+                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-500"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-2.5 rounded-xl text-xs shadow-sm transition flex items-center justify-center gap-2"
+                >
+                  <i className="fa-solid fa-plus"></i> Tandai Tanggal di Kalender
+                </button>
+              </form>
             </div>
           </div>
         </div>
