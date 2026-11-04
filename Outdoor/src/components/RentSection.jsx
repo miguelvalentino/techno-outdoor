@@ -16,6 +16,9 @@ const formatDate = (date) => {
 export const RentSection = () => {
   const [rentProducts, setRentProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
   
   const today = new Date();
   const defaultEnd = new Date();
@@ -84,6 +87,16 @@ export const RentSection = () => {
     });
   };
 
+  const categories = [...new Set(rentProducts.map(product => product.category?.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'id'));
+  const filteredRentProducts = rentProducts.filter(product => {
+    const matchesCategory = !selectedCategory || product.category?.trim() === selectedCategory;
+    const term = searchTerm.trim().toLocaleLowerCase('id');
+    const matchesSearch = !term || [product.name, product.category]
+      .some(value => String(value || '').toLocaleLowerCase('id').includes(term));
+    return matchesCategory && matchesSearch;
+  });
+
   return (
     <section className="tab-content block fade-in">
       
@@ -130,7 +143,39 @@ export const RentSection = () => {
 
       <BundleShowcase type="sewa" rentDays={rentDays} />
 
-      <h3 className="text-xl font-bold text-gray-800 mb-6">Daftar Alat Satuan Sewa</h3>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+        <h3 className="text-xl font-bold text-gray-800">Daftar Alat Satuan Sewa</h3>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <form
+            className="flex flex-1 sm:w-64"
+            onSubmit={event => {
+              event.preventDefault();
+              setSearchTerm(searchInput);
+            }}
+          >
+            <input
+              type="search"
+              value={searchInput}
+              onChange={event => setSearchInput(event.target.value)}
+              placeholder="Cari nama alat..."
+              aria-label="Cari alat sewa"
+              className="min-w-0 flex-1 border border-gray-200 rounded-l-xl px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+            />
+            <button type="submit" className="rounded-r-xl bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600">
+              <i className="fa-solid fa-magnifying-glass mr-1" aria-hidden="true"></i> Cari
+            </button>
+          </form>
+          <select
+            value={selectedCategory}
+            onChange={event => setSelectedCategory(event.target.value)}
+            aria-label="Filter kategori alat sewa"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+          >
+            <option value="">Semua Kategori</option>
+            {categories.map(category => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </div>
+      </div>
 
       {loading ? (
         <div className="text-center py-10 text-gray-500">
@@ -143,9 +188,15 @@ export const RentSection = () => {
           <h3 className="text-lg font-bold text-gray-800 mb-1">Belum ada barang untuk disewa</h3>
           <p className="text-gray-500 text-sm">Admin belum menambahkan katalog penyewaan alat.</p>
         </div>
+      ) : filteredRentProducts.length === 0 ? (
+        <div className="text-center py-10 bg-white rounded-2xl border border-gray-100 shadow-sm">
+          <i className="fa-solid fa-magnifying-glass text-3xl text-gray-300 mb-3"></i>
+          <p className="font-semibold text-gray-700">Alat sewa tidak ditemukan</p>
+          <p className="text-sm text-gray-500">Coba ubah kata pencarian atau kategori.</p>
+        </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-          {rentProducts.map(product => {
+          {filteredRentProducts.map(product => {
             const rentStock = Number(product.rent_stock ?? 0);
             return (
               <div key={product.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col hover:shadow-lg transition group">

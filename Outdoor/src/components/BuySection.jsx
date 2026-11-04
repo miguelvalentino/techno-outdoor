@@ -7,6 +7,9 @@ export const BuySection = () => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState('pop');
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
   
   const { addToCart } = useCart(); 
 
@@ -31,7 +34,16 @@ export const BuySection = () => {
     return () => window.removeEventListener('outdoor-order-paid', handleOrderPaid);
   }, []);
 
-  const sortedProducts = [...products].sort((a, b) => {
+  const categories = [...new Set(products.map(product => product.category?.trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'id'));
+  const filteredProducts = products.filter(product => {
+    const matchesCategory = !selectedCategory || product.category?.trim() === selectedCategory;
+    const term = searchTerm.trim().toLocaleLowerCase('id');
+    const matchesSearch = !term || [product.name, product.category]
+      .some(value => String(value || '').toLocaleLowerCase('id').includes(term));
+    return matchesCategory && matchesSearch;
+  });
+  const sortedProducts = [...filteredProducts].sort((a, b) => {
     if (sortBy === 'asc') return Number(a.price) - Number(b.price);
     if (sortBy === 'desc') return Number(b.price) - Number(a.price);
     return Number(a.id) - Number(b.id);
@@ -42,28 +54,65 @@ export const BuySection = () => {
       
       <BundleShowcase />
 
-      <div className="flex justify-between items-center mb-6 mt-8">
-        <h2 className="text-2xl font-bold text-gray-800">Alat Camping & Outdoor Baru</h2>
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-4 mb-6 mt-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <h2 className="text-2xl font-bold text-gray-800">Alat Camping & Outdoor Baru</h2>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
             className="border rounded-md px-3 py-1.5 text-sm text-gray-600 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            aria-label="Urutkan produk"
           >
             <option value="pop">Terpopuler</option>
             <option value="asc">Termurah</option>
             <option value="desc">Termahal</option>
           </select>
         </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <form
+            className="flex flex-1 sm:max-w-md"
+            onSubmit={event => {
+              event.preventDefault();
+              setSearchTerm(searchInput);
+            }}
+          >
+            <input
+              type="search"
+              value={searchInput}
+              onChange={event => setSearchInput(event.target.value)}
+              placeholder="Cari nama alat..."
+              aria-label="Cari alat yang dijual"
+              className="min-w-0 flex-1 border border-gray-200 rounded-l-xl px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+            />
+            <button type="submit" className="rounded-r-xl bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">
+              <i className="fa-solid fa-magnifying-glass mr-1" aria-hidden="true"></i> Cari
+            </button>
+          </form>
+          <select
+            value={selectedCategory}
+            onChange={event => setSelectedCategory(event.target.value)}
+            aria-label="Filter kategori produk"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          >
+            <option value="">Semua Kategori</option>
+            {categories.map(category => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </div>
       </div>
 
       {loading ? (
         <div className="text-center py-10 text-gray-500">Memuat produk dari database...</div>
-      ) : sortedProducts.length === 0 ? (
+      ) : products.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 shadow-sm">
           <i className="fa-solid fa-box-open text-5xl text-gray-300 mb-4"></i>
           <h3 className="text-lg font-bold text-gray-800 mb-1">Katalog Masih Kosong</h3>
           <p className="text-gray-500 text-sm">Belum ada barang yang dijual saat ini.</p>
+        </div>
+      ) : sortedProducts.length === 0 ? (
+        <div className="text-center py-10 bg-white rounded-2xl border border-gray-100 shadow-sm">
+          <i className="fa-solid fa-magnifying-glass text-3xl text-gray-300 mb-3"></i>
+          <p className="font-semibold text-gray-700">Produk tidak ditemukan</p>
+          <p className="text-sm text-gray-500">Coba ubah kata pencarian atau kategori.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
