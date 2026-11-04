@@ -1,5 +1,6 @@
 // routes/api.js
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const db = require('../db');
 const snap = require('../midtrans');
@@ -287,11 +288,34 @@ router.get('/payment/client-key', (req, res) => {
 router.post('/payment/notification', async (req, res) => {
   try {
     await ensureGuideTables();
-    const statusResponse = await snap.transaction.notification(req.body);
-    const orderIdRaw = statusResponse.order_id;
-    const orderId = orderIdRaw ? orderIdRaw.split('-')[1] : null;
-    const transactionStatus = statusResponse.transaction_status;
-    const fraudStatus = statusResponse.fraud_status;
+    const notification = req.body || {};
+    const {
+      order_id: orderIdRaw,
+      status_code: statusCode,
+      gross_amount: grossAmount,
+      signature_key: signatureKey,
+      transaction_status: transactionStatus,
+      fraud_status: fraudStatus
+    } = notification;
+
+    // Midtrans "Test notification URL" / ping bisa mengirim body kosong.
+    if (!orderIdRaw || !statusCode || !grossAmount || !signatureKey) {
+      return res.status(200).json({ status: 'OK' });
+    }
+
+    // Verifikasi signature Midtrans secara lokal (tanpa memanggil API status Midtrans).
+    const expectedSignature = crypto
+      .createHash('sha512')
+      .update(`${orderIdRaw}${statusCode}${grossAmount}${process.env.MIDTRANS_SERVER_KEY || ''}`)
+      .digest('hex');
+
+    if (expectedSignature !== signatureKey) {
+      console.warn('Midtrans notification signature tidak valid untuk order:', orderIdRaw);
+      // Tetap 200 agar Midtrans tidak retry terus-menerus; notifikasi tidak diproses.
+      return res.status(200).json({ status: 'OK' });
+    }
+
+    const orderId = String(orderIdRaw).split('-')[1] || null;
 
     let newStatus = 'Menunggu Pembayaran';
     if (transactionStatus === 'capture') {
@@ -306,7 +330,7 @@ router.post('/payment/notification', async (req, res) => {
       newStatus = 'Menunggu Pembayaran';
     }
 
-    if (orderId) {
+    if (orderId && /^\d+$/.test(orderId)) {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, orderId]);
       await db.query('UPDATE guide_schedules SET status = $1 WHERE order_id = $2', [newStatus, orderId]);
       await syncOrderInventory(orderId, newStatus);
