@@ -27,7 +27,6 @@ export const Navbar = () => {
   }, []);
 
   const handleLogout = () => {
-    clearCart(); 
     logout();
     setIsUserMenuOpen(false);
     navigate('/'); 

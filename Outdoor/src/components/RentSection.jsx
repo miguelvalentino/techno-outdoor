@@ -67,13 +67,17 @@ export const RentSection = () => {
   const handleRent = (product) => {
     const rentStock = Number(product.rent_stock ?? 0);
     const totalRentPrice = Number(product.rent_price_per_day) * rentDays;
+    const originalPrice = Number(product.price || 0);
+    const depositPerUnit = Math.max(0, Math.round(0.5 * originalPrice - totalRentPrice));
     const displayDate = `${startDate.split('-').reverse().join('/')} s/d ${endDate.split('-').reverse().join('/')}`;
 
     addToCart({ 
       id: product.id, 
       type: 'sewa', 
       name: `[Sewa ${rentDays} Hari] ${product.name} (${displayDate})`, 
-      price: totalRentPrice, 
+      price: totalRentPrice,
+      original_price: originalPrice,
+      deposit_per_unit: depositPerUnit,
       qty: 1,
       stock: rentStock, 
       image_url: product.image_url
@@ -168,11 +172,23 @@ export const RentSection = () => {
                   <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">{product.category}</span>
                   <h3 className="font-bold text-gray-800 text-sm mb-2 line-clamp-2">{product.name}</h3>
                   
-                  <div className="mt-auto pt-3 border-t border-gray-100 flex justify-between items-center">
-                    <div>
-                      <p className="text-[10px] text-gray-400 font-bold uppercase">Total ({rentDays} Hari)</p>
-                      <p className="font-black text-orange-600">Rp {(Number(product.rent_price_per_day) * rentDays).toLocaleString('id-ID')}</p>
+                  <div className="mt-auto pt-3 border-t border-gray-100 space-y-1">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase">Sewa ({rentDays} Hari)</p>
+                        <p className="font-black text-orange-600">Rp {(Number(product.rent_price_per_day) * rentDays).toLocaleString('id-ID')}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-400 font-semibold">Harga Asli</p>
+                        <p className="text-xs font-bold text-gray-600">Rp {Number(product.price || 0).toLocaleString('id-ID')}</p>
+                      </div>
                     </div>
+                    {Math.max(0, Math.round(0.5 * Number(product.price || 0) - Number(product.rent_price_per_day) * rentDays)) > 0 && (
+                      <div className="bg-amber-50 border border-amber-200/70 rounded-lg px-2 py-1 flex items-center justify-between text-[10px] text-amber-800">
+                        <span className="font-semibold"><i className="fa-solid fa-shield-halved mr-1"></i>Deposito (50%):</span>
+                        <span className="font-bold">+Rp {Math.max(0, Math.round(0.5 * Number(product.price || 0) - Number(product.rent_price_per_day) * rentDays)).toLocaleString('id-ID')}</span>
+                      </div>
+                    )}
                   </div>
                   
                   <button 

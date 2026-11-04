@@ -14,18 +14,35 @@ const ensureGuideTables = async () => {
     await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
     await db.query("ALTER TABLE guides ADD COLUMN IF NOT EXISTS working_days TEXT[] DEFAULT ARRAY['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu']");
 
-    // 2. Kolom tambahan tabel order_items & orders
+    // 2. Kolom tambahan tabel order_items & orders (termasuk sistem Deposito & Barang Rusak per-unit)
+    await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS id SERIAL');
     await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS guide_id INT');
+    await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS original_price NUMERIC DEFAULT 0');
+    await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS deposit_per_unit NUMERIC DEFAULT 0');
+    await db.query('ALTER TABLE order_items ADD COLUMN IF NOT EXISTS damaged_qty INT DEFAULT 0');
+
     await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_deducted BOOLEAN DEFAULT false');
     await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_returned BOOLEAN DEFAULT false');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deposit_amount NUMERIC DEFAULT 0');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deposit_forfeited NUMERIC DEFAULT 0');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deposit_refunded NUMERIC DEFAULT 0');
+    await db.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS deposit_status VARCHAR(60) DEFAULT 'Tidak Ada'");
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS damage_note TEXT');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS late_days INT DEFAULT 0');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS late_fee NUMERIC DEFAULT 0');
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS penalty_bill NUMERIC DEFAULT 0');
+    await db.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS penalty_status VARCHAR(40) DEFAULT 'Tidak Ada'");
 
     // 3. Kolom stok sewa terpisah pada tabel products
     await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS rent_stock INT');
     await db.query('UPDATE products SET rent_stock = COALESCE(stock, 5) WHERE rent_stock IS NULL');
     await db.query('ALTER TABLE products ALTER COLUMN rent_stock SET DEFAULT 0');
 
-    // 4. Kolom foto profil pada tabel users
+    // 4. Kolom foto profil & jaminan identitas (NIK KTP + Rekening Bank) pada tabel users
     await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT');
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS nik VARCHAR(30)');
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_name VARCHAR(50)');
+    await db.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account VARCHAR(50)');
 
     // 5. Tabel ulasan & jadwal kalender guide
     await db.query(`
@@ -72,24 +89,33 @@ const parseDateRangeFromItemName = (itemName) => {
   };
 };
 
-// Helper sinkronisasi stok jual (stock) & stok sewa (rent_stock) secara idempotent berdasarkan perubahan status order
-const syncOrderInventory = async (orderId, newStatus) => {
+// Helper sinkronisasi stok jual (stock) & stok sewa (rent_stock) serta deposito secara idempotent
+const syncOrderInventory = async (orderId, newStatus, inspectionPayload = null) => {
   const orderRes = await db.query(
-    'SELECT id, order_type, status, COALESCE(stock_deducted, false) as stock_deducted, COALESCE(stock_returned, false) as stock_returned FROM orders WHERE id = $1',
+    `SELECT id, order_type, status,
+            COALESCE(stock_deducted, false) as stock_deducted,
+            COALESCE(stock_returned, false) as stock_returned,
+            COALESCE(deposit_amount, 0) as deposit_amount
+     FROM orders WHERE id = $1`,
     [orderId]
   );
   if (orderRes.rows.length === 0) return;
   const order = orderRes.rows[0];
 
   const itemsRes = await db.query(
-    'SELECT product_id, quantity, item_type FROM order_items WHERE order_id = $1 AND product_id IS NOT NULL',
+    `SELECT oi.id as order_item_id, oi.product_id, oi.quantity, oi.item_type,
+            COALESCE(oi.original_price, p.price, 0) as original_price,
+            COALESCE(oi.deposit_per_unit, 0) as deposit_per_unit,
+            COALESCE(oi.damaged_qty, 0) as damaged_qty
+     FROM order_items oi
+     LEFT JOIN products p ON oi.product_id = p.id
+     WHERE oi.order_id = $1 AND oi.product_id IS NOT NULL`,
     [orderId]
   );
-  if (itemsRes.rows.length === 0) return;
 
   const isPaidActive = !['Menunggu Pembayaran', 'Dibatalkan', 'Reschedule/Ditolak'].includes(newStatus);
   const isCancelled = ['Dibatalkan', 'Reschedule/Ditolak'].includes(newStatus);
-  const isReturnedRental = order.order_type === 'sewa' && newStatus === 'Dikembalikan';
+  const isRentalCompleted = order.order_type === 'sewa' && ['Dikembalikan', 'Selesai', 'Dikembalikan (Ada Kerusakan)', 'Dikembalikan (Terlambat)'].includes(newStatus);
 
   // KASUS A: Order baru saja dibayar -> Kurangi stok sesuai tipe item (beli -> stock, sewa -> rent_stock)
   if (isPaidActive && !order.stock_deducted) {
@@ -108,9 +134,17 @@ const syncOrderInventory = async (orderId, newStatus) => {
         );
       }
     }
-    await db.query('UPDATE orders SET stock_deducted = true, stock_returned = false WHERE id = $1', [orderId]);
+
+    const nextDepositStatus = order.order_type === 'sewa' && Number(order.deposit_amount) > 0
+      ? 'Ditahan'
+      : 'Tidak Ada';
+
+    await db.query(
+      'UPDATE orders SET stock_deducted = true, stock_returned = false, deposit_status = CASE WHEN deposit_status = \'Belum Dibayar\' OR deposit_status = \'Tidak Ada\' THEN $2 ELSE deposit_status END WHERE id = $1',
+      [orderId, nextDepositStatus]
+    );
   }
-  // KASUS B: Order yang sudah memotong stok dibatalkan -> Kembalikan stok
+  // KASUS B: Order yang sudah memotong stok dibatalkan -> Kembalikan stok penuh
   else if (isCancelled && order.stock_deducted && !order.stock_returned) {
     for (const item of itemsRes.rows) {
       const qty = Number(item.quantity || 1);
@@ -127,18 +161,121 @@ const syncOrderInventory = async (orderId, newStatus) => {
         );
       }
     }
-    await db.query('UPDATE orders SET stock_deducted = false, stock_returned = true WHERE id = $1', [orderId]);
+    await db.query(
+      "UPDATE orders SET stock_deducted = false, stock_returned = true, deposit_status = 'Dibatalkan' WHERE id = $1",
+      [orderId]
+    );
   }
-  // KASUS C: Barang sewa sudah dikembalikan ke toko ('Dikembalikan') -> Kembalikan rent_stock ke gudang sewa
-  else if (isReturnedRental && order.stock_deducted && !order.stock_returned) {
+  // KASUS C: Penyewaan selesai / dikembalikan -> Hitung barang bagus vs barang rusak, denda keterlambatan (2%/hari dari harga asli), potongan deposito, & tagihan kekurangan (penalty_bill)
+  else if (isRentalCompleted && order.stock_deducted && !order.stock_returned) {
+    const damagedMap = (inspectionPayload && inspectionPayload.damagedMap) || {};
+    const lateDays = Math.max(0, Number(inspectionPayload?.late_days || 0));
+    const allDamagedDefault = newStatus === 'Dikembalikan (Ada Kerusakan)' && (!inspectionPayload || !inspectionPayload.damagedMap);
+
+    let damageFineTotal = 0;
+    let totalOriginalValue = 0;
+    let totalDamagedUnits = 0;
+    let totalRentedUnits = 0;
+
     for (const item of itemsRes.rows) {
       const qty = Number(item.quantity || 1);
+      const origPrice = Number(item.original_price || 0);
+      totalRentedUnits += qty;
+      totalOriginalValue += origPrice * qty;
+
+      let damagedQty = 0;
+      const mapKey = item.order_item_id || item.product_id;
+      if (damagedMap[mapKey] !== undefined) {
+        damagedQty = Math.min(qty, Math.max(0, Number(damagedMap[mapKey]) || 0));
+      } else if (damagedMap[item.product_id] !== undefined) {
+        damagedQty = Math.min(qty, Math.max(0, Number(damagedMap[item.product_id]) || 0));
+      } else if (allDamagedDefault) {
+        damagedQty = qty;
+      }
+
+      const goodQty = Math.max(0, qty - damagedQty);
+      totalDamagedUnits += damagedQty;
+
       await db.query(
-        'UPDATE products SET rent_stock = COALESCE(rent_stock, 0) + $1 WHERE id = $2',
-        [qty, item.product_id]
+        'UPDATE order_items SET damaged_qty = $1 WHERE order_id = $2 AND product_id = $3',
+        [damagedQty, orderId, item.product_id]
       );
+
+      if (goodQty > 0) {
+        await db.query(
+          'UPDATE products SET rent_stock = COALESCE(rent_stock, 0) + $1 WHERE id = $2',
+          [goodQty, item.product_id]
+        );
+      }
+
+      // Kompensasi barang rusak: jika ada deposit_per_unit maka ambil sebesar deposit_per_unit, namun jika deposito Rp 0 (karena sewa >= 5 hari), kompensasi kerusakan adalah 50% harga asli per unit rusak!
+      const damageUnitPenalty = Number(item.deposit_per_unit || 0) > 0
+        ? Number(item.deposit_per_unit)
+        : Math.round(0.5 * origPrice);
+      damageFineTotal += damagedQty * damageUnitPenalty;
     }
-    await db.query('UPDATE orders SET stock_returned = true WHERE id = $1', [orderId]);
+
+    // Denda Keterlambatan = 2% per hari keterlambatan dari Total Harga Asli Barang yang disewa
+    const lateFeeTotal = Math.round(0.02 * totalOriginalValue * lateDays);
+    const totalFines = Math.round(damageFineTotal + lateFeeTotal);
+
+    const totalDeposit = Number(order.deposit_amount || 0);
+    // Potong dari deposito terlebih dahulu
+    const finalForfeited = Math.min(totalDeposit, totalFines);
+    const finalRefunded = Math.max(0, totalDeposit - finalForfeited);
+    // Jika total denda melebihi deposito (misal deposito Rp 0 karena sewa 5 hari, atau denda telat + rusak > deposito), sisanya menjadi Tagihan Denda (penalty_bill) yang wajib dibayar user!
+    const penaltyBill = Math.max(0, totalFines - totalDeposit);
+    const penaltyStatus = penaltyBill > 0 ? 'Belum Lunas' : 'Tidak Ada';
+
+    let finalDepositStatus = 'Tidak Ada';
+    if (totalDeposit > 0) {
+      if (finalForfeited === 0) {
+        finalDepositStatus = 'Dikembalikan 100%';
+      } else if (finalRefunded === 0) {
+        finalDepositStatus = penaltyBill > 0
+          ? 'Hangus + Kurang Bayar Denda'
+          : 'Hangus Total';
+      } else {
+        finalDepositStatus = 'Dikembalikan Sebagian';
+      }
+    } else if (penaltyBill > 0) {
+      finalDepositStatus = 'Tagihan Denda Aktif';
+    }
+
+    let finalOrderStatus = newStatus;
+    if (totalDamagedUnits > 0) {
+      finalOrderStatus = 'Dikembalikan (Ada Kerusakan)';
+    } else if (lateDays > 0) {
+      finalOrderStatus = 'Dikembalikan (Terlambat)';
+    }
+    const damageNote = inspectionPayload?.damage_note !== undefined ? inspectionPayload.damage_note : null;
+
+    await db.query(
+      `UPDATE orders
+       SET status = $1,
+           stock_returned = true,
+           deposit_forfeited = $2,
+           deposit_refunded = $3,
+           deposit_status = $4,
+           damage_note = COALESCE($5, damage_note),
+           late_days = $6,
+           late_fee = $7,
+           penalty_bill = $8,
+           penalty_status = $9
+       WHERE id = $10`,
+      [
+        finalOrderStatus,
+        finalForfeited,
+        finalRefunded,
+        finalDepositStatus,
+        damageNote,
+        lateDays,
+        lateFeeTotal,
+        penaltyBill,
+        penaltyStatus,
+        orderId
+      ]
+    );
   }
 };
 
@@ -297,11 +434,9 @@ router.get('/guides', async (req, res) => {
     const result = await db.query('SELECT * FROM guides ORDER BY rating DESC, id ASC');
     const guides = result.rows;
 
-    // Ambil semua ulasan guide
     const reviewsRes = await db.query('SELECT * FROM guide_reviews ORDER BY created_at DESC');
     const allReviews = reviewsRes.rows;
 
-    // PENTING: Hanya ambil jadwal yang SUDAH DIBAYAR / AKTIF (bukan 'Menunggu Pembayaran' atau 'Dibatalkan')
     const schedulesRes = await db.query(`
       SELECT gs.id, gs.guide_id, gs.order_id, gs.customer_name, gs.destination,
              TO_CHAR(gs.start_date, 'YYYY-MM-DD') as start_date,
@@ -315,7 +450,6 @@ router.get('/guides', async (req, res) => {
     `);
     const allSchedules = [...schedulesRes.rows];
 
-    // Ambil juga dari order_items yang bertipe booking & SUDAH DIBAYAR (jika ada order lama yang belum masuk guide_schedules)
     const bookingOrdersRes = await db.query(`
       SELECT o.id as order_id, o.status, u.name as customer_name,
              COALESCE(oi.guide_id, oi.product_id) as guide_id, oi.item_name
@@ -463,7 +597,6 @@ router.delete('/admin/guides/:id', async (req, res) => {
   }
 });
 
-// Endpoint Admin: Menambah jadwal booking / blokir tanggal manual ke kalender guide
 router.post('/admin/guides/:id/schedules', async (req, res) => {
   const { id } = req.params;
   const { start_date, end_date, destination, customer_name, note } = req.body;
@@ -493,7 +626,6 @@ router.delete('/admin/guides/schedules/:scheduleId', async (req, res) => {
   }
 });
 
-// Endpoint Pelanggan: Memberikan Rating & Ulasan kepada Guide yang sudah disewa & dibayar
 router.post('/guides/:id/reviews', async (req, res) => {
   const { id } = req.params;
   const { order_id, customer_id, customer_name, rating, comment } = req.body;
@@ -502,7 +634,6 @@ router.post('/guides/:id/reviews', async (req, res) => {
     const numericRating = Math.min(5, Math.max(1, Number(rating) || 5));
 
     if (order_id) {
-      // Pastikan pesanan benar-benar ada dan sudah dibayar (bukan Menunggu Pembayaran / Dibatalkan)
       const orderCheck = await db.query('SELECT id, customer_id, status FROM orders WHERE id = $1', [order_id]);
       if (orderCheck.rows.length === 0) {
         return res.status(404).json({ error: 'Data pesanan tidak ditemukan.' });
@@ -512,7 +643,6 @@ router.post('/guides/:id/reviews', async (req, res) => {
         return res.status(400).json({ error: 'Ulasan hanya dapat diberikan setelah pembayaran pesanan berhasil.' });
       }
 
-      // Cek apakah order_id ini sudah pernah memberikan ulasan untuk guide ini
       const existing = await db.query(
         'SELECT id FROM guide_reviews WHERE order_id = $1 AND guide_id = $2',
         [order_id, id]
@@ -528,7 +658,6 @@ router.post('/guides/:id/reviews', async (req, res) => {
       [order_id || null, id, customer_id || null, customer_name || 'Pendaki', numericRating, comment || '']
     );
 
-    // Hitung ulang rata-rata rating pemandu dan perbarui tabel guides
     const avgRes = await db.query(
       'SELECT AVG(rating) as avg_rating, COUNT(*) as total_reviews FROM guide_reviews WHERE guide_id = $1',
       [id]
@@ -568,17 +697,29 @@ router.post('/bookings', async (req, res) => {
 
 // --- 3. AUTHENTICATION, EDIT PROFILE & DELETE ACCOUNT ---
 router.post('/auth/register', async (req, res) => {
-  const { name, email, password, phone, city, address, shoe_size, hiking_level } = req.body;
+  const { name, email, password, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account } = req.body;
   try {
     await ensureGuideTables();
     const userCheck = await db.query('SELECT * FROM users WHERE email = $1', [email]);
     if (userCheck.rows.length > 0) return res.status(400).json({ error: 'Email sudah terdaftar!' });
 
     const newUser = await db.query(
-      `INSERT INTO users (name, email, password_hash, phone, city, address, shoe_size, hiking_level, role) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'customer')
-       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url`,
-      [name, email, password, phone || null, city || null, address || null, shoe_size || null, hiking_level || 'Pemula']
+      `INSERT INTO users (name, email, password_hash, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account, role) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'customer')
+       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account, avatar_url`,
+      [
+        name,
+        email,
+        password,
+        phone || null,
+        city || null,
+        address || null,
+        shoe_size || null,
+        hiking_level || 'Pemula',
+        nik || null,
+        bank_name || null,
+        bank_account || null
+      ]
     );
     res.status(201).json({ message: 'Registrasi berhasil', user: newUser.rows[0] });
   } catch (err) {
@@ -592,7 +733,7 @@ router.post('/auth/login', async (req, res) => {
   try {
     await ensureGuideTables();
     const userResult = await db.query(
-      'SELECT id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url FROM users WHERE email = $1 AND password_hash = $2',
+      'SELECT id, name, email, role, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account, avatar_url FROM users WHERE email = $1 AND password_hash = $2',
       [email, password]
     );
     if (userResult.rows.length === 0) return res.status(401).json({ error: 'Email atau kata sandi salah!' });
@@ -603,10 +744,9 @@ router.post('/auth/login', async (req, res) => {
   }
 });
 
-// Edit Profile untuk User maupun Admin
 router.put('/users/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, email, phone, city, address, shoe_size, hiking_level, avatar_url, new_password } = req.body;
+  const { name, email, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account, avatar_url, new_password } = req.body;
   try {
     await ensureGuideTables();
     const userCheck = await db.query('SELECT * FROM users WHERE id = $1', [id]);
@@ -615,7 +755,6 @@ router.put('/users/:id', async (req, res) => {
     }
     const existing = userCheck.rows[0];
 
-    // Jika email diganti, pastikan tidak dipakai akun lain
     if (email && email !== existing.email) {
       const emailTaken = await db.query('SELECT id FROM users WHERE email = $1 AND id != $2', [email, id]);
       if (emailTaken.rows.length > 0) {
@@ -630,9 +769,9 @@ router.put('/users/:id', async (req, res) => {
     const updated = await db.query(
       `UPDATE users
        SET name = $1, email = $2, phone = $3, city = $4, address = $5, shoe_size = $6,
-           hiking_level = $7, avatar_url = $8, password_hash = $9
-       WHERE id = $10
-       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, avatar_url`,
+           hiking_level = $7, nik = $8, bank_name = $9, bank_account = $10, avatar_url = $11, password_hash = $12
+       WHERE id = $13
+       RETURNING id, name, email, role, phone, city, address, shoe_size, hiking_level, nik, bank_name, bank_account, avatar_url`,
       [
         name || existing.name,
         email || existing.email,
@@ -641,6 +780,9 @@ router.put('/users/:id', async (req, res) => {
         address ?? existing.address,
         shoe_size ?? existing.shoe_size,
         hiking_level || existing.hiking_level || 'Pemula',
+        nik !== undefined ? nik : existing.nik,
+        bank_name !== undefined ? bank_name : existing.bank_name,
+        bank_account !== undefined ? bank_account : existing.bank_account,
         avatar_url !== undefined ? avatar_url : existing.avatar_url,
         finalPassword,
         id
@@ -654,7 +796,6 @@ router.put('/users/:id', async (req, res) => {
   }
 });
 
-// Delete Account (HANYA untuk User biasa / customer, Admin dilarang dihapus)
 router.delete('/users/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -665,28 +806,33 @@ router.delete('/users/:id', async (req, res) => {
     }
     const targetUser = userRes.rows[0];
 
-    // Safeguard 1: Akun Admin tidak boleh dihapus
     if (targetUser.role === 'admin') {
       return res.status(403).json({ error: 'Akun Administrator tidak dapat dihapus.' });
     }
 
-    // Safeguard 2: Cek apakah user masih memiliki tanggungan penyewaan barang atau pendakian aktif yang belum selesai
     const activeOrderCheck = await db.query(
-      `SELECT id, order_type, status FROM orders
+      `SELECT id, order_type, status, COALESCE(penalty_bill, 0) as penalty_bill, penalty_status FROM orders
        WHERE customer_id = $1
-         AND status IN ('Diproses', 'Dikirim', 'Sedang Disewa', 'Dalam Pengiriman Kembali', 'Menunggu Konfirmasi Admin', 'Guide Terkonfirmasi', 'Sedang Mendaki')
+         AND (
+           status IN ('Diproses', 'Dikirim', 'Sedang Disewa', 'Dalam Pengiriman Kembali', 'Menunggu Konfirmasi Admin', 'Guide Terkonfirmasi', 'Sedang Mendaki')
+           OR (COALESCE(penalty_bill, 0) > 0 AND penalty_status = 'Belum Lunas')
+         )
        LIMIT 1`,
       [id]
     );
 
     if (activeOrderCheck.rows.length > 0) {
       const activeOrd = activeOrderCheck.rows[0];
+      if (Number(activeOrd.penalty_bill) > 0 && activeOrd.penalty_status === 'Belum Lunas') {
+        return res.status(400).json({
+          error: `Tidak dapat menghapus akun karena Anda masih memiliki Tagihan Denda Keterlambatan/Kerusakan yang belum dilunasi pada pesanan #ORD-${activeOrd.id} sebesar Rp ${Number(activeOrd.penalty_bill).toLocaleString('id-ID')}.`
+        });
+      }
       return res.status(400).json({
         error: `Tidak dapat menghapus akun karena Anda masih memiliki transaksi aktif (#ORD-${activeOrd.id} - Status: ${activeOrd.status}). Selesaikan atau batalkan pesanan terlebih dahulu.`
       });
     }
 
-    // Batalkan jadwal guide dari order yang masih Menunggu Pembayaran milik user ini, dan lepaskan relasi customer_id pada riwayat order selesai agar tidak melanggar FK
     const userOrders = await db.query('SELECT id, status FROM orders WHERE customer_id = $1', [id]);
     for (const ord of userOrders.rows) {
       if (ord.status === 'Menunggu Pembayaran') {
@@ -707,7 +853,7 @@ router.delete('/users/:id', async (req, res) => {
 });
 
 
-// --- 4. ORDERS, PEMBAYARAN & STOK TERPISAH ---
+// --- 4. ORDERS, PEMBAYARAN, DEPOSITO 50% & STOK TERPISAH ---
 router.post('/orders', async (req, res) => {
   const { customer_id, total_price, items, order_type } = req.body;
   try {
@@ -716,9 +862,30 @@ router.post('/orders', async (req, res) => {
     const hasMidtrans = Boolean(process.env.MIDTRANS_SERVER_KEY);
     const initialStatus = hasMidtrans ? 'Menunggu Pembayaran' : (finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses');
 
-    // Validasi ketersediaan stok jual/sewa DAN anti double-booking guide sebelum membuat pesanan
+    // Safeguard 1: Blokir pembuatan pesanan baru jika user masih memiliki Tagihan Denda Keterlambatan/Kerusakan yang Belum Lunas!
+    if (customer_id) {
+      const unpaidPenaltyRes = await db.query(
+        "SELECT id, penalty_bill FROM orders WHERE customer_id = $1 AND COALESCE(penalty_bill, 0) > 0 AND penalty_status = 'Belum Lunas' LIMIT 1",
+        [customer_id]
+      );
+      if (unpaidPenaltyRes.rows.length > 0) {
+        const pOrd = unpaidPenaltyRes.rows[0];
+        return res.status(400).json({
+          error: `Akun Anda memiliki Tagihan Denda Keterlambatan/Kerusakan yang belum dilunasi pada pesanan #ORD-${pOrd.id} sebesar Rp ${Number(pOrd.penalty_bill).toLocaleString('id-ID')}. Silakan lunasi terlebih dahulu di menu Profil.`
+        });
+      }
+    }
+
+    // Prepared items & perhitungan Deposito Sewa 50% dari harga asli barang
+    let calculatedBaseSubtotal = 0;
+    let calculatedTotalDeposit = 0;
+    const enrichedItems = [];
+
     for (let item of items) {
+      const qty = Math.max(1, Number(item.qty || 1));
+      const unitPrice = Number(item.price || 0);
       const isGuideItem = item.type === 'booking' || finalOrderType === 'booking' || (typeof item.id === 'string' && item.id.startsWith('guide-'));
+
       if (isGuideItem) {
         let gId = item.guide_id ? Number(item.guide_id) : null;
         if (!gId && typeof item.id === 'string' && item.id.startsWith('guide-')) {
@@ -745,63 +912,108 @@ router.post('/orders', async (req, res) => {
             });
           }
         }
+
+        calculatedBaseSubtotal += unitPrice * qty;
+        enrichedItems.push({
+          ...item,
+          qty,
+          productId: null,
+          guideId: gId,
+          originalPrice: unitPrice,
+          depositPerUnit: 0
+        });
       } else if (typeof item.id === 'number') {
-        // Cek stok produk berdasarkan tipe item (beli -> stock, sewa -> rent_stock)
-        const prodRes = await db.query('SELECT id, name, stock, rent_stock FROM products WHERE id = $1', [item.id]);
+        const prodRes = await db.query('SELECT id, name, price, stock, rent_stock FROM products WHERE id = $1', [item.id]);
         if (prodRes.rows.length === 0) {
           return res.status(404).json({ error: `Produk "${item.name}" tidak ditemukan di database.` });
         }
         const prod = prodRes.rows[0];
-        const reqQty = Number(item.qty || 1);
         const isRent = item.type === 'sewa' || finalOrderType === 'sewa';
         const availStock = isRent ? Number(prod.rent_stock ?? 0) : Number(prod.stock ?? 0);
 
-        if (reqQty > availStock) {
+        if (qty > availStock) {
           return res.status(400).json({
             error: `Maaf, stok ${isRent ? 'sewa' : 'beli'} untuk "${prod.name}" tidak mencukupi (Tersisa: ${availStock} unit).`
           });
         }
+
+        const originalPrice = Number(prod.price || item.original_price || 0);
+        // Rumus Deposito: Toko wajib memegang minimal 50% dari harga asli barang per unit
+        const depositPerUnit = isRent
+          ? Math.max(0, Math.round(0.5 * originalPrice - unitPrice))
+          : 0;
+
+        calculatedBaseSubtotal += unitPrice * qty;
+        calculatedTotalDeposit += depositPerUnit * qty;
+
+        enrichedItems.push({
+          ...item,
+          qty,
+          productId: prod.id,
+          guideId: null,
+          originalPrice,
+          depositPerUnit
+        });
+      } else {
+        // Bundling item (id berupa string 'bundle-...')
+        const isRent = item.type === 'sewa' || finalOrderType === 'sewa';
+        const originalPrice = Number(item.original_price || 0);
+        const depositPerUnit = isRent && originalPrice > 0
+          ? Math.max(0, Math.round(0.5 * originalPrice - unitPrice))
+          : 0;
+
+        calculatedBaseSubtotal += unitPrice * qty;
+        calculatedTotalDeposit += depositPerUnit * qty;
+
+        enrichedItems.push({
+          ...item,
+          qty,
+          productId: null,
+          guideId: null,
+          originalPrice,
+          depositPerUnit
+        });
       }
     }
 
+    const finalGrandTotal = Math.round(calculatedBaseSubtotal + calculatedTotalDeposit) || Math.round(Number(total_price || 0));
+    const initialDepositStatus = finalOrderType === 'sewa' && calculatedTotalDeposit > 0
+      ? (hasMidtrans ? 'Belum Dibayar' : 'Ditahan')
+      : 'Tidak Ada';
+
     const newOrder = await db.query(
-      'INSERT INTO orders (customer_id, total_price, status, order_type, stock_deducted, stock_returned) VALUES ($1, $2, $3, $4, false, false) RETURNING id',
-      [customer_id, total_price, initialStatus, finalOrderType]
+      `INSERT INTO orders (customer_id, total_price, deposit_amount, deposit_forfeited, deposit_refunded, deposit_status, status, order_type, stock_deducted, stock_returned)
+       VALUES ($1, $2, $3, 0, 0, $4, $5, $6, false, false) RETURNING id`,
+      [customer_id, finalGrandTotal, calculatedTotalDeposit, initialDepositStatus, initialStatus, finalOrderType]
     );
     const orderId = newOrder.rows[0].id;
 
     const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [customer_id]);
     const customer = userRes.rows[0] || {};
 
-    for (let item of items) {
-      const isGuideItem = item.type === 'booking' || finalOrderType === 'booking' || (typeof item.id === 'string' && item.id.startsWith('guide-'));
-      let productId = null;
-      let guideId = null;
-
-      if (isGuideItem) {
-        if (item.guide_id) {
-          guideId = Number(item.guide_id);
-        } else if (typeof item.id === 'string' && item.id.startsWith('guide-')) {
-          const matchId = item.id.match(/^guide-(\d+)/);
-          guideId = matchId ? parseInt(matchId[1], 10) : null;
-        } else if (typeof item.id === 'number') {
-          guideId = item.id;
-        }
-        productId = null;
-      } else if (typeof item.id === 'number') {
-        productId = item.id;
-      }
-
-      const safeItemImage = item.image_url && item.image_url.startsWith('data:image') && guideId
+    for (let item of enrichedItems) {
+      const safeItemImage = item.image_url && item.image_url.startsWith('data:image') && item.guideId
         ? ''
         : (item.image_url || '');
 
       await db.query(
-        'INSERT INTO order_items (order_id, product_id, guide_id, quantity, price_at_time, item_name, item_image, item_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-        [orderId, productId, guideId, item.qty || 1, item.price, item.name, safeItemImage, item.type || finalOrderType || 'beli']
+        `INSERT INTO order_items (order_id, product_id, guide_id, quantity, price_at_time, original_price, deposit_per_unit, damaged_qty, item_name, item_image, item_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10)`,
+        [
+          orderId,
+          item.productId,
+          item.guideId,
+          item.qty,
+          item.price,
+          item.originalPrice,
+          item.depositPerUnit,
+          item.name,
+          safeItemImage,
+          item.type || finalOrderType || 'beli'
+        ]
       );
 
-      if (isGuideItem && guideId) {
+      if (item.guideId) {
         const parsedRange = (item.start_date && item.end_date)
           ? { start_date: item.start_date, end_date: item.end_date }
           : parseDateRangeFromItemName(item.name);
@@ -811,7 +1023,7 @@ router.post('/orders', async (req, res) => {
             `INSERT INTO guide_schedules (guide_id, order_id, customer_name, destination, start_date, end_date, note, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
-              guideId,
+              item.guideId,
               orderId,
               customer.name || 'Pelanggan',
               item.destination || 'Pendakian Gunung',
@@ -825,7 +1037,6 @@ router.post('/orders', async (req, res) => {
       }
     }
 
-    // Jika tidak menggunakan Midtrans (langsung Diproses), kurangi stok sekarang
     if (!hasMidtrans) {
       await syncOrderInventory(orderId, initialStatus);
     }
@@ -835,22 +1046,34 @@ router.post('/orders', async (req, res) => {
 
     if (hasMidtrans) {
       try {
+        const midtransItems = enrichedItems.map((item, idx) => ({
+          id: String(item.id || idx).substring(0, 50),
+          price: Math.round(Number(item.price)),
+          quantity: Number(item.qty || 1),
+          name: String(item.name || 'Item').substring(0, 50)
+        }));
+
+        // Tambahkan baris Deposito Jaminan ke Midtrans jika ada deposito sewa
+        if (calculatedTotalDeposit > 0) {
+          midtransItems.push({
+            id: `DEPOSIT-${orderId}`,
+            price: Math.round(calculatedTotalDeposit),
+            quantity: 1,
+            name: 'Deposito Jaminan Sewa (50% Nilai Barang)'
+          });
+        }
+
         const parameter = {
           transaction_details: {
             order_id: `ORD-${orderId}-${Date.now()}`,
-            gross_amount: Math.round(Number(total_price))
+            gross_amount: finalGrandTotal
           },
           customer_details: {
             first_name: customer.name || 'Customer',
             email: customer.email || 'customer@example.com',
             phone: customer.phone || '08123456789'
           },
-          item_details: items.map((item, idx) => ({
-            id: String(item.id || idx).substring(0, 50),
-            price: Math.round(Number(item.price)),
-            quantity: Number(item.qty || 1),
-            name: String(item.name || 'Item').substring(0, 50)
-          }))
+          item_details: midtransItems
         };
 
         const transaction = await snap.createTransaction(parameter);
@@ -884,7 +1107,6 @@ router.post('/orders/:id/pay', async (req, res) => {
     }
     const order = orderRes.rows[0];
 
-    // 1. Cek apakah tanggal guide pada order ini sudah dibooking dan dibayar orang lain sementara order ini masih pending
     if (order.order_type === 'booking') {
       const mySchedules = await db.query('SELECT * FROM guide_schedules WHERE order_id = $1', [order.id]);
       for (const sch of mySchedules.rows) {
@@ -905,7 +1127,6 @@ router.post('/orders/:id/pay', async (req, res) => {
         }
       }
     } else {
-      // 2. Cek apakah stok produk (beli / sewa) masih cukup saat pelanggan hendak membayar tagihan tertunda
       const orderItems = await db.query(
         'SELECT oi.product_id, oi.quantity, oi.item_type, p.name, p.stock, p.rent_stock FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = $1',
         [order.id]
@@ -963,15 +1184,21 @@ router.get('/orders/user/:userId', async (req, res) => {
 
     const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
       const itemsResult = await db.query(`
-        SELECT oi.product_id,
+        SELECT oi.id as order_item_id,
+               oi.product_id,
                COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) as guide_id,
-               oi.quantity, oi.price_at_time, oi.item_type,
+               oi.quantity, oi.price_at_time,
+               COALESCE(oi.original_price, p.price, 0) as original_price,
+               COALESCE(oi.deposit_per_unit, 0) as deposit_per_unit,
+               COALESCE(oi.damaged_qty, 0) as damaged_qty,
+               oi.item_type,
                COALESCE(oi.item_name, p.name, g.name) as name, 
                COALESCE(NULLIF(oi.item_image, ''), p.image_url, g.avatar_url) as image_url 
         FROM order_items oi 
         LEFT JOIN products p ON oi.product_id = p.id 
         LEFT JOIN guides g ON COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) = g.id
         WHERE oi.order_id = $1
+        ORDER BY oi.id ASC
       `, [order.id]);
 
       const itemsWithReview = itemsResult.rows.map(item => {
@@ -1052,7 +1279,6 @@ router.put('/admin/products/:id', async (req, res) => {
   }
 });
 
-// Endpoint Quick Adjust Stock (Tambah / Kurangi Stok Jual atau Stok Sewa secara instan dari Tabel Admin)
 router.patch('/admin/products/:id/stock', async (req, res) => {
   const { id } = req.params;
   const { stock, rent_stock } = req.body;
@@ -1091,7 +1317,9 @@ router.get('/orders/all', async (req, res) => {
   try {
     await ensureGuideTables();
     const query = `
-      SELECT o.*, u.name as customer_name, u.email as customer_email 
+      SELECT o.*,
+             u.name as customer_name, u.email as customer_email, u.phone as customer_phone,
+             u.nik as customer_nik, u.bank_name as customer_bank_name, u.bank_account as customer_bank_account
       FROM orders o 
       LEFT JOIN users u ON o.customer_id = u.id 
       ORDER BY o.created_at DESC
@@ -1100,13 +1328,19 @@ router.get('/orders/all', async (req, res) => {
     
     const fullOrders = await Promise.all(ordersResult.rows.map(async (order) => {
       const itemsResult = await db.query(`
-        SELECT oi.product_id, oi.guide_id, oi.quantity, oi.price_at_time, oi.item_type,
+        SELECT oi.id as order_item_id,
+               oi.product_id, oi.guide_id, oi.quantity, oi.price_at_time,
+               COALESCE(oi.original_price, p.price, 0) as original_price,
+               COALESCE(oi.deposit_per_unit, 0) as deposit_per_unit,
+               COALESCE(oi.damaged_qty, 0) as damaged_qty,
+               oi.item_type,
                COALESCE(oi.item_name, p.name, g.name) as name, 
                COALESCE(NULLIF(oi.item_image, ''), p.image_url, g.avatar_url) as image_url 
         FROM order_items oi 
         LEFT JOIN products p ON oi.product_id = p.id 
         LEFT JOIN guides g ON COALESCE(oi.guide_id, CASE WHEN oi.item_type = 'booking' THEN oi.product_id ELSE NULL END) = g.id
         WHERE oi.order_id = $1
+        ORDER BY oi.id ASC
       `, [order.id]);
       return { ...order, items: itemsResult.rows };
     }));
@@ -1121,15 +1355,18 @@ router.get('/orders/all', async (req, res) => {
 router.put('/orders/:id/status', async (req, res) => {
   try {
     await ensureGuideTables();
-    const { status, return_resi } = req.body;
+    const { status, return_resi, damaged_items, damage_note } = req.body;
     if (return_resi !== undefined) {
       await db.query('UPDATE orders SET status = $1, return_resi = $2 WHERE id = $3', [status, return_resi, req.params.id]);
     } else {
       await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, req.params.id]);
     }
 
-    // Sinkronkan pengurangan / pengembalian stok produk (beli & sewa) secara otomatis
-    await syncOrderInventory(req.params.id, status);
+    // Sinkronkan pengurangan / pengembalian stok produk (beli & sewa) serta perhitungan deposito per unit
+    await syncOrderInventory(req.params.id, status, {
+      damagedMap: damaged_items,
+      damage_note
+    });
 
     // Sinkronkan status jadwal kalender guide jika order ini adalah booking guide
     if (status === 'Dibatalkan' || status === 'Reschedule/Ditolak') {
@@ -1138,7 +1375,6 @@ router.put('/orders/:id/status', async (req, res) => {
       await db.query('UPDATE guide_schedules SET status = $1 WHERE order_id = $2', [status, req.params.id]);
     }
 
-    // Jika status Selesai pada order booking, tambah total_trips pada guide terkait
     if (status === 'Selesai') {
       const orderItems = await db.query(
         "SELECT COALESCE(oi.guide_id, oi.product_id) as guide_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.id = $1 AND o.order_type = 'booking'",
@@ -1158,6 +1394,106 @@ router.put('/orders/:id/status', async (req, res) => {
   }
 });
 
+// Endpoint khusus Admin: Inspeksi Pengembalian Barang Sewa (per-unit bagus vs rusak), Denda Keterlambatan (2%/hari dari harga asli), & penyelesaian Deposito
+router.post('/orders/:id/inspect-return', async (req, res) => {
+  const { id } = req.params;
+  const { damaged_items, damage_note, late_days } = req.body;
+  try {
+    await ensureGuideTables();
+    const orderRes = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+    }
+
+    await syncOrderInventory(id, 'Dikembalikan', {
+      damagedMap: damaged_items || {},
+      damage_note: damage_note || '',
+      late_days: Number(late_days || 0)
+    });
+
+    const updatedOrder = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    res.json({
+      message: 'Inspeksi pengembalian barang sewa, keterlambatan, dan perhitungan deposito berhasil disimpan!',
+      order: updatedOrder.rows[0]
+    });
+  } catch (err) {
+    console.error('Error inspect return:', err.message);
+    res.status(500).json({ error: 'Gagal memproses inspeksi pengembalian: ' + err.message });
+  }
+});
+
+// Endpoint Pelanggan: Membayar Tagihan Denda Kekurangan (penalty_bill) via Midtrans Snap
+router.post('/orders/:id/pay-penalty', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await ensureGuideTables();
+    const orderRes = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+    }
+    const order = orderRes.rows[0];
+    const penaltyAmount = Math.round(Number(order.penalty_bill || 0));
+
+    if (penaltyAmount <= 0 || order.penalty_status === 'Lunas') {
+      return res.status(400).json({ error: 'Tidak ada tagihan denda yang perlu dibayar pada pesanan ini.' });
+    }
+
+    const hasMidtrans = Boolean(process.env.MIDTRANS_SERVER_KEY);
+    if (!hasMidtrans) {
+      await db.query("UPDATE orders SET penalty_status = 'Lunas' WHERE id = $1", [id]);
+      return res.json({ paid_directly: true, message: 'Tagihan denda berhasil dilunasi!' });
+    }
+
+    const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [order.customer_id]);
+    const customer = userRes.rows[0] || {};
+
+    const parameter = {
+      transaction_details: {
+        order_id: `PEN-${order.id}-${Date.now()}`,
+        gross_amount: penaltyAmount
+      },
+      customer_details: {
+        first_name: customer.name || 'Customer',
+        email: customer.email || 'customer@example.com',
+        phone: customer.phone || '08123456789'
+      },
+      item_details: [
+        {
+          id: `PENALTY-${order.id}`,
+          price: penaltyAmount,
+          quantity: 1,
+          name: `Tagihan Denda Sewa #ORD-${order.id}`.substring(0, 50)
+        }
+      ]
+    };
+
+    const transaction = await snap.createTransaction(parameter);
+    res.json({ snap_token: transaction.token, redirect_url: transaction.redirect_url });
+  } catch (err) {
+    console.error('Error pay penalty:', err.message);
+    res.status(500).json({ error: 'Gagal membuat pembayaran denda: ' + err.message });
+  }
+});
+
+// Endpoint Konfirmasi Pelunasan Tagihan Denda (Oleh Sistem Midtrans onSuccess maupun Manual oleh Admin)
+router.put('/orders/:id/penalty-paid', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await ensureGuideTables();
+    await db.query(
+      `UPDATE orders
+       SET penalty_status = 'Lunas',
+           deposit_status = CASE WHEN deposit_status = 'Tagihan Denda Aktif' THEN 'Denda Lunas' ELSE deposit_status END
+       WHERE id = $1`,
+      [id]
+    );
+    res.json({ message: 'Tagihan denda telah ditandai LUNAS!' });
+  } catch (err) {
+    console.error('Error mark penalty paid:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui status denda.' });
+  }
+});
+
 router.delete('/orders/:id', async (req, res) => {
   try {
     await ensureGuideTables();
@@ -1173,9 +1509,19 @@ router.delete('/orders/:id', async (req, res) => {
 
 router.get('/admin/stats', async (req, res) => {
   try {
+    await ensureGuideTables();
     const usersRes = await db.query("SELECT COUNT(*) FROM users WHERE role = 'customer'");
     const ordersRes = await db.query("SELECT COUNT(*) FROM orders");
-    const revenueRes = await db.query("SELECT SUM(total_price) FROM orders WHERE status NOT IN ('Dibatalkan', 'Menunggu Pembayaran', 'Reschedule/Ditolak')");
+    // Pendapatan Bersih Toko = Harga sewa/beli murni (total_price - deposit_amount) DITAMBAH deposito yang hangus (deposit_forfeited) DITAMBAH tagihan denda tambahan yang sudah lunas (penalty_bill)
+    const revenueRes = await db.query(`
+      SELECT SUM(
+        (COALESCE(total_price, 0) - COALESCE(deposit_amount, 0))
+        + COALESCE(deposit_forfeited, 0)
+        + CASE WHEN penalty_status = 'Lunas' THEN COALESCE(penalty_bill, 0) ELSE 0 END
+      ) as sum
+      FROM orders
+      WHERE status NOT IN ('Dibatalkan', 'Menunggu Pembayaran', 'Reschedule/Ditolak')
+    `);
     const guidesRes = await db.query("SELECT COUNT(*) FROM guides");
     res.json({
       totalUsers: parseInt(usersRes.rows[0].count) || 0,
