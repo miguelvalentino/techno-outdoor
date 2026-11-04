@@ -47,6 +47,7 @@ export const AdminPage = () => {
 
   // --- STATE BUNDLING ---
   const [bundles, setBundles] = useState([]);
+  const [editingBundleId, setEditingBundleId] = useState(null);
   const [bundleForm, setBundleForm] = useState({
     bundle_key: '',
     label: 'PAKET HEMAT',
@@ -217,6 +218,35 @@ export const AdminPage = () => {
     setBundleItems(bundleItems.filter((_, i) => i !== index));
   };
 
+  const handleEditBundle = (bundle) => {
+    setEditingBundleId(bundle.db_id);
+    setBundleForm({
+      bundle_key: bundle.id || '',
+      label: bundle.label || 'PAKET HEMAT',
+      name: bundle.name || '',
+      tag: bundle.tag || '',
+      badge: bundle.badge || '',
+      discount_percentage: Number(bundle.disc ?? 0),
+      type: bundle.type || 'beli'
+    });
+    setBundleItems((bundle.items || []).map(item => ({
+      name: item.n || '',
+      desc: item.d || '',
+      price: item.p ?? '',
+      icon: item.i || 'fa-check'
+    })));
+    document.getElementById('bundle-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleCancelBundleEdit = () => {
+    setEditingBundleId(null);
+    setBundleForm({ bundle_key: '', label: 'PAKET HEMAT', name: '', tag: '', badge: 'Hemat 20%', discount_percentage: 20, type: 'beli' });
+    setBundleItems([
+      { name: '', desc: '', price: '', icon: 'fa-tent' },
+      { name: '', desc: '', price: '', icon: 'fa-backpack' }
+    ]);
+  };
+
   const handleBundleSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -226,22 +256,23 @@ export const AdminPage = () => {
         items: bundleItems
       };
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/admin/bundles`, {
-        method: 'POST',
+      const response = await fetch(
+        editingBundleId
+          ? `http://localhost:5000/api/admin/bundles/${editingBundleId}`
+          : 'http://localhost:5000/api/admin/bundles',
+        {
+        method: editingBundleId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (response.ok) {
-        alert('Paket Bundling berhasil dibuat!');
-        setBundleForm({ bundle_key: '', label: 'PAKET HEMAT', name: '', tag: '', badge: 'Hemat 20%', discount_percentage: 20, type: 'beli' });
-        setBundleItems([
-          { name: '', desc: '', price: '', icon: 'fa-tent' },
-          { name: '', desc: '', price: '', icon: 'fa-backpack' }
-        ]);
+        alert(editingBundleId ? 'Paket Bundling berhasil diperbarui!' : 'Paket Bundling berhasil dibuat!');
+        handleCancelBundleEdit();
         fetchData();
       } else {
-        alert('Gagal membuat paket bundling.');
+        const error = await response.json().catch(() => ({}));
+        alert(error.error || (editingBundleId ? 'Gagal memperbarui paket bundling.' : 'Gagal membuat paket bundling.'));
       }
     } catch (err) {
       console.error(err);
@@ -667,8 +698,11 @@ export const AdminPage = () => {
         </div>
       ) : activeTab === 'bundling' ? (
         <div className="fade-in">
-          <form onSubmit={handleBundleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-10">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Buat Paket Bundling / Promo Baru</h2>
+          <form id="bundle-editor" onSubmit={handleBundleSubmit} className={`p-6 rounded-2xl shadow-sm border mb-10 ${editingBundleId ? 'bg-orange-50 border-orange-200' : 'bg-white border-gray-100'}`}>
+            <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+              <h2 className="text-xl font-bold text-gray-800">{editingBundleId ? 'Edit Paket Bundling' : 'Buat Paket Bundling / Promo Baru'}</h2>
+              {editingBundleId && <button type="button" onClick={handleCancelBundleEdit} className="text-sm font-semibold text-gray-600 hover:text-gray-900">Batal Edit</button>}
+            </div>
             
             <div className="grid sm:grid-cols-2 gap-4 mb-6">
               <div>
@@ -692,7 +726,11 @@ export const AdminPage = () => {
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Persentase Diskon (%)</label>
-                <input type="number" value={bundleForm.discount_percentage} onChange={e => setBundleForm({...bundleForm, discount_percentage: e.target.value})} placeholder="20" className="w-full border rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
+                <input type="number" min="0" max="100" value={bundleForm.discount_percentage} onChange={e => setBundleForm(current => ({
+                  ...current,
+                  discount_percentage: e.target.value,
+                  badge: /^Hemat\s+\d+%$/i.test(current.badge) ? `Hemat ${e.target.value}%` : current.badge
+                }))} placeholder="20" className="w-full border rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" />
               </div>
             </div>
 
@@ -718,7 +756,7 @@ export const AdminPage = () => {
             </div>
 
             <button type="submit" className="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-3 rounded-xl transition shadow-md">
-              Simpan & Publikasikan Paket Bundling
+              {editingBundleId ? 'Simpan Perubahan Paket' : 'Simpan & Publikasikan Paket Bundling'}
             </button>
           </form>
 
@@ -734,7 +772,10 @@ export const AdminPage = () => {
                         <span className="bg-orange-100 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded uppercase">{bundle.badge}</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${bundle.type === 'sewa' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>Tipe: {bundle.type || 'beli'}</span>
                       </div>
-                      <button onClick={() => handleDeleteBundle(bundle.db_id)} className="text-red-500 hover:text-red-700 text-sm" title="Hapus Paket"><i className="fa-solid fa-trash"></i></button>
+                      <div className="flex gap-3">
+                        <button type="button" onClick={() => handleEditBundle(bundle)} className="text-brand-600 hover:text-brand-800 text-sm" title="Edit Paket"><i className="fa-solid fa-pen-to-square"></i></button>
+                        <button type="button" onClick={() => handleDeleteBundle(bundle.db_id)} className="text-red-500 hover:text-red-700 text-sm" title="Hapus Paket"><i className="fa-solid fa-trash"></i></button>
+                      </div>
                     </div>
                     <h3 className="font-bold text-gray-800 text-base">{bundle.name}</h3>
                     <p className="text-xs text-gray-500 mb-3">{bundle.tag}</p>
