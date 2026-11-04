@@ -256,15 +256,18 @@ export const AdminPage = () => {
         items: bundleItems
       };
 
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
       const response = await fetch(
         editingBundleId
-          ? `http://localhost:5000/api/admin/bundles/${editingBundleId}`
-          : 'http://localhost:5000/api/admin/bundles',
+          ? `${API_BASE}/api/admin/bundles/${editingBundleId}`
+          : `${API_BASE}/api/admin/bundles`,
         {
-        method: editingBundleId ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+          method: editingBundleId ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
 
       if (response.ok) {
         alert(editingBundleId ? 'Paket Bundling berhasil diperbarui!' : 'Paket Bundling berhasil dibuat!');
