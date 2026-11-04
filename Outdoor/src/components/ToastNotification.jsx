@@ -13,7 +13,7 @@ export const ToastNotification = () => {
           <i className="fa-solid fa-check text-green-600 text-sm"></i>
         </div>
         <p className="text-xs font-bold text-gray-800 whitespace-nowrap">
-           Berhasil ditambahkan
+          {toast.message || 'Berhasil ditambahkan'}
         </p>
       </div>
     </div>

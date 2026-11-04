@@ -83,8 +83,8 @@ router.post('/admin/bundles', async (req, res) => {
     if (items && items.length > 0) {
       for (let item of items) {
         await db.query(
-          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price) VALUES ($1, $2, $3, $4)',
-          [bundleId, item.name, item.desc || '', item.price || 0]
+          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, icon) VALUES ($1, $2, $3, $4, $5)',
+          [bundleId, item.name, item.desc || '', item.price || 0, item.icon || 'fa-check']
         );
       }
     }
@@ -98,15 +98,123 @@ router.post('/admin/bundles', async (req, res) => {
   }
 });
 
+router.delete('/admin/bundles/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db.query('DELETE FROM bundles WHERE id = $1', [id]);
+    res.json({ message: 'Paket bundling berhasil dihapus' });
+  } catch (err) {
+    console.error('Error delete bundle:', err.message);
+    res.status(500).json({ error: 'Gagal menghapus paket bundling' });
+  }
+});
+
 
 // --- 2. ENDPOINT GUIDE & BOOKING ---
 router.get('/guides', async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM guides ORDER BY rating DESC');
+    const result = await db.query('SELECT * FROM guides ORDER BY rating DESC, id ASC');
     res.json(result.rows);
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal mengambil data guide' });
+  }
+});
+
+router.post('/admin/guides', async (req, res) => {
+  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url } = req.body;
+  try {
+    await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
+
+    const parsedSkills = Array.isArray(skills)
+      ? skills.map(s => String(s).trim()).filter(Boolean)
+      : typeof skills === 'string' && skills.trim() !== ''
+        ? skills.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+    const query = `
+      INSERT INTO guides (name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;
+    `;
+    const newGuide = await db.query(query, [
+      name,
+      mountain_region,
+      description || '',
+      Number(price_per_day) || 0,
+      Number(rating) || 5.0,
+      Number(total_trips) || 0,
+      Number(experience_years) || 1,
+      verified !== undefined ? Boolean(verified) : true,
+      parsedSkills,
+      avatar_url || ''
+    ]);
+    res.status(201).json({ message: 'Pemandu berhasil ditambahkan!', guide: newGuide.rows[0] });
+  } catch (err) {
+    console.error('Error add guide:', err.message);
+    res.status(500).json({ error: 'Gagal menambahkan data pemandu: ' + err.message });
+  }
+});
+
+router.put('/admin/guides/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, mountain_region, description, price_per_day, rating, total_trips, experience_years, verified, skills, avatar_url } = req.body;
+  try {
+    await db.query('ALTER TABLE guides ADD COLUMN IF NOT EXISTS description TEXT');
+
+    const parsedSkills = Array.isArray(skills)
+      ? skills.map(s => String(s).trim()).filter(Boolean)
+      : typeof skills === 'string' && skills.trim() !== ''
+        ? skills.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+    const query = `
+      UPDATE guides
+      SET name = $1, mountain_region = $2, description = $3, price_per_day = $4, rating = $5, total_trips = $6,
+          experience_years = $7, verified = $8, skills = $9, avatar_url = $10
+      WHERE id = $11 RETURNING *;
+    `;
+    const updatedGuide = await db.query(query, [
+      name,
+      mountain_region,
+      description || '',
+      Number(price_per_day) || 0,
+      Number(rating) || 5.0,
+      Number(total_trips) || 0,
+      Number(experience_years) || 1,
+      verified !== undefined ? Boolean(verified) : true,
+      parsedSkills,
+      avatar_url || '',
+      id
+    ]);
+    res.json({ message: 'Data pemandu berhasil diperbarui!', guide: updatedGuide.rows[0] });
+  } catch (err) {
+    console.error('Error update guide:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui data pemandu: ' + err.message });
+  }
+});
+
+router.patch('/admin/guides/:id/verify', async (req, res) => {
+  const { id } = req.params;
+  const { verified } = req.body;
+  try {
+    const updated = await db.query(
+      'UPDATE guides SET verified = $1 WHERE id = $2 RETURNING *',
+      [Boolean(verified), id]
+    );
+    res.json({ message: 'Status verifikasi diperbarui', guide: updated.rows[0] });
+  } catch (err) {
+    console.error('Error verify guide:', err.message);
+    res.status(500).json({ error: 'Gagal memperbarui status verifikasi' });
+  }
+});
+
+router.delete('/admin/guides/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM guides WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Pemandu berhasil dihapus' });
+  } catch (err) {
+    console.error('Error delete guide:', err.message);
+    res.status(500).json({ error: 'Gagal menghapus pemandu' });
   }
 });
 
@@ -161,7 +269,7 @@ router.post('/orders', async (req, res) => {
   const { customer_id, total_price, items, order_type } = req.body;
   try {
     const finalOrderType = order_type || (items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli');
-        const initialStatus = finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses';
+    const initialStatus = finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses';
 
     const newOrder = await db.query(
       'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
@@ -278,7 +386,12 @@ router.get('/orders/all', async (req, res) => {
 
 router.put('/orders/:id/status', async (req, res) => {
   try {
-    await db.query('UPDATE orders SET status = $1 WHERE id = $2', [req.body.status, req.params.id]);
+    const { status, return_resi } = req.body;
+    if (return_resi !== undefined) {
+      await db.query('UPDATE orders SET status = $1, return_resi = $2 WHERE id = $3', [status, return_resi, req.params.id]);
+    } else {
+      await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, req.params.id]);
+    }
     res.json({ message: 'Status berhasil diperbarui' });
   } catch (err) {
     console.error(err.message);
@@ -291,99 +404,16 @@ router.get('/admin/stats', async (req, res) => {
     const usersRes = await db.query("SELECT COUNT(*) FROM users WHERE role = 'customer'");
     const ordersRes = await db.query("SELECT COUNT(*) FROM orders");
     const revenueRes = await db.query("SELECT SUM(total_price) FROM orders WHERE status != 'Dibatalkan'");
+    const guidesRes = await db.query("SELECT COUNT(*) FROM guides");
     res.json({
       totalUsers: parseInt(usersRes.rows[0].count) || 0,
       totalOrders: parseInt(ordersRes.rows[0].count) || 0,
-      totalRevenue: parseInt(revenueRes.rows[0].sum) || 0
+      totalRevenue: parseInt(revenueRes.rows[0].sum) || 0,
+      totalGuides: parseInt(guidesRes.rows[0].count) || 0
     });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal mengambil statistik bisnis' });
-  }
-});
-
-
-router.get('/bundles', async (req, res) => {
-  try {
-    const bundlesResult = await db.query('SELECT * FROM bundles ORDER BY id ASC');
-    const bundles = bundlesResult.rows;
-
-    const fullBundles = await Promise.all(bundles.map(async (bundle) => {
-      const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
-      return {
-        id: bundle.bundle_key,
-        db_id: bundle.id, 
-        label: bundle.label,
-        name: bundle.name,
-        tag: bundle.tag,
-        badge: bundle.badge,
-        disc: bundle.discount_percentage,
-        icon: bundle.icon,
-        color: bundle.color,
-        items: itemsResult.rows.map(item => ({
-          id: item.id,
-          i: item.icon,
-          n: item.item_name,
-          d: item.item_desc,
-          p: Number(item.price)
-        }))
-      };
-    }));
-
-    res.json(fullBundles);
-  } catch (err) {
-    console.error('Error get bundles:', err.message);
-    res.status(500).json({ error: 'Gagal mengambil data bundling' });
-  }
-});
-
-router.post('/admin/bundles', async (req, res) => {
-  const { bundle_key, label, name, tag, badge, discount_percentage, items } = req.body;
-  
-  try {
-    await db.query('BEGIN');
-
-    const bundleQuery = `
-      INSERT INTO bundles (bundle_key, label, name, tag, badge, discount_percentage) 
-      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;
-    `;
-    const bundleRes = await db.query(bundleQuery, [
-      bundle_key || 'paket-' + Date.now(), 
-      label || 'PAKET HEMAT', 
-      name, 
-      tag, 
-      badge, 
-      discount_percentage || 0
-    ]);
-    
-    const bundleId = bundleRes.rows[0].id;
-
-    if (items && items.length > 0) {
-      for (let item of items) {
-        await db.query(
-          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price) VALUES ($1, $2, $3, $4)',
-          [bundleId, item.name, item.desc || '', item.price || 0]
-        );
-      }
-    }
-
-    await db.query('COMMIT');
-    res.status(201).json({ message: 'Paket bundling berhasil dibuat!' });
-  } catch (err) {
-    await db.query('ROLLBACK');
-    console.error('Error add bundle:', err.message);
-    res.status(500).json({ error: 'Gagal membuat paket bundling' });
-  }
-});
-
-router.delete('/admin/bundles/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    await db.query('DELETE FROM bundles WHERE id = $1', [id]);
-    res.json({ message: 'Paket bundling berhasil dihapus' });
-  } catch (err) {
-    console.error('Error delete bundle:', err.message);
-    res.status(500).json({ error: 'Gagal menghapus paket bundling' });
   }
 });
 
