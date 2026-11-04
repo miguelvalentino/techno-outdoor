@@ -18,13 +18,25 @@ app.get('/', async (req, res) => {
       database_time: result.rows[0].now 
     });
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error pada Database');
+    console.error('Error root query:', err.code || err.message || err);
+    res.status(500).send('Server Error pada Database: ' + (err.code || err.message));
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server backend aktif di http://localhost:${PORT}`);
-});
 const apiRoutes = require('./routes/api');
 app.use('/api', apiRoutes);
+
+app.listen(PORT, async () => {
+  console.log(`Server backend aktif di http://localhost:${PORT}`);
+  try {
+    const res = await db.query('SELECT NOW()');
+    console.log('✅ Berhasil terhubung ke database PostgreSQL! Waktu server:', res.rows[0].now);
+  } catch (err) {
+    const errMsg = err.code || err.message || 'ETIMEDOUT (Koneksi timeout)';
+    console.error(`❌ Gagal terhubung ke database: [${errMsg}]`);
+    if (errMsg === 'ETIMEDOUT' || err.code === 'ETIMEDOUT') {
+      console.error('👉 Penyebab: Port database (5432) diblokir oleh Wi-Fi/jaringan internet Anda.');
+      console.error('👉 Solusi cepat: Coba ganti koneksi internet ke Hotspot HP (Tethering).');
+    }
+  }
+});
