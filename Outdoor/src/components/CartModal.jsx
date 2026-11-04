@@ -65,7 +65,7 @@ export const CartModal = ({ isOpen, onClose }) => {
     }
     
     try {
-      const response = await fetch('http://localhost:5000/api/orders', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -86,7 +86,7 @@ export const CartModal = ({ isOpen, onClose }) => {
             onSuccess: async function (result) {
               console.log('Payment success:', result);
               try {
-                await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+                await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}/status`, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ status: 'Diproses' })
@@ -123,7 +123,7 @@ export const CartModal = ({ isOpen, onClose }) => {
             onError: async function (result) {
               console.error('Payment error:', result);
               try {
-                await fetch(`http://localhost:5000/api/orders/${orderId}`, { method: 'DELETE' });
+                await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}`, { method: 'DELETE' });
               } catch (e) {
                 console.error(e);
               }
@@ -133,7 +133,7 @@ export const CartModal = ({ isOpen, onClose }) => {
             onClose: async function () {
               console.log('Payment window closed by user');
               try {
-                await fetch(`http://localhost:5000/api/orders/${orderId}`, { method: 'DELETE' });
+                await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}`, { method: 'DELETE' });
               } catch (e) {
                 console.error(e);
               }

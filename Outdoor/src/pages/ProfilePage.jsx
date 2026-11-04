@@ -54,7 +54,7 @@ export const ProfilePage = () => {
 
   const fetchOrders = () => {
     if (!user) return;
-    fetch(`http://localhost:5000/api/orders/user/${user.id}`)
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/user/${user.id}`)
       .then((res) => res.json())
       .then((data) => {
         setOrders(Array.isArray(data) ? data : []);
@@ -114,7 +114,7 @@ export const ProfilePage = () => {
     e.preventDefault();
     setSavingProfile(true);
     try {
-      const response = await fetch(`http://localhost:5000/api/users/${user.id}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/${user.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profileForm)
@@ -144,7 +144,7 @@ export const ProfilePage = () => {
 
     setDeletingAccount(true);
     try {
-      const response = await fetch(`http://localhost:5000/api/users/${user.id}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/${user.id}`, {
         method: 'DELETE'
       });
       const data = await response.json();
@@ -203,7 +203,7 @@ export const ProfilePage = () => {
   const handlePayNow = async (order) => {
     setPayingOrderId(order.id);
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${order.id}/pay`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${order.id}/pay`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -212,7 +212,7 @@ export const ProfilePage = () => {
         window.snap.pay(data.snap_token, {
           onSuccess: async function (result) {
             console.log('Payment success:', result);
-            await fetch(`http://localhost:5000/api/orders/${order.id}/status`, {
+            await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${order.id}/status`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ status: 'Diproses' })
@@ -251,7 +251,7 @@ export const ProfilePage = () => {
   const handlePayPenalty = async (order) => {
     setPayingPenaltyOrderId(order.id);
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${order.id}/pay-penalty`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${order.id}/pay-penalty`, {
         method: 'POST'
       });
       const data = await response.json();
@@ -260,7 +260,7 @@ export const ProfilePage = () => {
         window.snap.pay(data.snap_token, {
           onSuccess: async function (result) {
             console.log('Penalty payment success:', result);
-            await fetch(`http://localhost:5000/api/orders/${order.id}/penalty-paid`, {
+            await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${order.id}/penalty-paid`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' }
             });
@@ -292,7 +292,7 @@ export const ProfilePage = () => {
   const handleCancelOrder = async (orderId) => {
     if (!window.confirm('Apakah Anda yakin ingin membatalkan pesanan ini?')) return;
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Dibatalkan' })
@@ -317,7 +317,7 @@ export const ProfilePage = () => {
     }
 
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -343,7 +343,7 @@ export const ProfilePage = () => {
     if(!window.confirm("Apakah Anda yakin ingin menyelesaikan perjalanan ini?")) return;
 
     try {
-      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/orders/${orderId}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Selesai' })
@@ -372,7 +372,7 @@ export const ProfilePage = () => {
 
     setSubmittingReviewKey(key);
     try {
-      const response = await fetch(`http://localhost:5000/api/guides/${guideId}/reviews`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/guides/${guideId}/reviews`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

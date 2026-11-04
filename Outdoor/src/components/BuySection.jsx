@@ -14,7 +14,7 @@ export const BuySection = () => {
   const { addToCart } = useCart(); 
 
   const fetchBuyProducts = () => {
-    fetch('http://localhost:5000/api/products')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/products`)
       .then((res) => res.json())
       .then((data) => {
         const buyableItems = Array.isArray(data) ? data.filter(product => Number(product.price) > 0) : [];
