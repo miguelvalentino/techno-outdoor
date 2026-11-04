@@ -10,6 +10,7 @@ export const ProfilePage = () => {
   const [activeTab, setActiveTab] = useState('pembelian');
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [payingOrderId, setPayingOrderId] = useState(null);
 
   const [returnInputActive, setReturnInputActive] = useState({}); 
   const [resiValues, setResiValues] = useState({}); 
@@ -62,8 +63,74 @@ export const ProfilePage = () => {
       case 'Dibatalkan':
       case 'Reschedule/Ditolak':
         return 'bg-red-100 text-red-700';
+      case 'Menunggu Pembayaran':
+        return 'bg-orange-100 text-orange-700 font-bold border border-orange-200';
       default: 
         return 'bg-orange-100 text-orange-700';
+    }
+  };
+
+  const handlePayNow = async (order) => {
+    setPayingOrderId(order.id);
+    try {
+      const response = await fetch(`http://localhost:5000/api/orders/${order.id}/pay`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+
+      if (response.ok && data.snap_token && window.snap) {
+        window.snap.pay(data.snap_token, {
+          onSuccess: async function (result) {
+            console.log('Payment success:', result);
+            await fetch(`http://localhost:5000/api/orders/${order.id}/status`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'Diproses' })
+            });
+            alert('Pembayaran berhasil diverifikasi! Pesanan Anda sedang diproses.');
+            fetchOrders();
+          },
+          onPending: function (result) {
+            console.log('Payment pending:', result);
+            alert('Menunggu pembayaran. Silakan selesaikan pembayaran sesuai instruksi yang dipilih.');
+            fetchOrders();
+          },
+          onError: function (result) {
+            console.error('Payment error:', result);
+            alert('Pembayaran gagal atau terjadi kesalahan.');
+          },
+          onClose: function () {
+            console.log('Payment popup closed');
+          }
+        });
+      } else {
+        alert(data.error || 'Gagal memuat jendela pembayaran.');
+      }
+    } catch (err) {
+      console.error('Error pay now:', err);
+      alert('Terjadi kesalahan jaringan.');
+    } finally {
+      setPayingOrderId(null);
+    }
+  };
+
+  const handleCancelOrder = async (orderId) => {
+    if (!window.confirm('Apakah Anda yakin ingin membatalkan pesanan ini?')) return;
+    try {
+      const response = await fetch(`http://localhost:5000/api/orders/${orderId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Dibatalkan' })
+      });
+      if (response.ok) {
+        alert('Pesanan berhasil dibatalkan.');
+        fetchOrders();
+      } else {
+        alert('Gagal membatalkan pesanan.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Terjadi kesalahan jaringan.');
     }
   };
 
@@ -117,7 +184,7 @@ export const ProfilePage = () => {
       console.error('Error completing trip:', error);
       alert('Terjadi kesalahan jaringan.');
     }
-  }
+  };
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-10 flex-grow w-full fade-in">
@@ -286,6 +353,29 @@ export const ProfilePage = () => {
                     <span className="text-xs text-gray-500 font-bold uppercase tracking-wider block">Total Pembayaran</span>
                     <span className="text-lg font-black text-gray-900">Rp {Number(order.total_price).toLocaleString('id-ID')}</span>
                   </div>
+
+                  {/* Tombol Aksi Pembayaran jika Status 'Menunggu Pembayaran' */}
+                  {order.status === 'Menunggu Pembayaran' && (
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                      <button 
+                        onClick={() => handlePayNow(order)}
+                        disabled={payingOrderId === order.id}
+                        className="flex-1 sm:flex-initial bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow transition flex items-center justify-center gap-2 active:scale-95 disabled:bg-gray-400"
+                      >
+                        {payingOrderId === order.id ? (
+                          <span><i className="fa-solid fa-spinner fa-spin mr-1"></i> Memuat...</span>
+                        ) : (
+                          <span><i className="fa-solid fa-credit-card mr-1"></i> Bayar Sekarang</span>
+                        )}
+                      </button>
+                      <button 
+                        onClick={() => handleCancelOrder(order.id)}
+                        className="text-xs font-bold text-gray-500 hover:text-red-600 px-3 py-2.5 rounded-xl hover:bg-red-50 transition border border-gray-200 hover:border-red-200"
+                      >
+                        Batalkan
+                      </button>
+                    </div>
+                  )}
                   
                   {order.order_type === 'sewa' && order.status === 'Sedang Disewa' && (
                     <div className="w-full sm:w-auto">

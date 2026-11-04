@@ -2,6 +2,44 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const snap = require('../midtrans');
+
+// --- 0. PAYMENT CONFIG & WEBHOOK ---
+router.get('/payment/client-key', (req, res) => {
+  res.json({ clientKey: process.env.MIDTRANS_CLIENT_KEY || '' });
+});
+
+router.post('/payment/notification', async (req, res) => {
+  try {
+    const statusResponse = await snap.transaction.notification(req.body);
+    const orderIdRaw = statusResponse.order_id;
+    const orderId = orderIdRaw ? orderIdRaw.split('-')[1] : null;
+    const transactionStatus = statusResponse.transaction_status;
+    const fraudStatus = statusResponse.fraud_status;
+
+    let newStatus = 'Menunggu Pembayaran';
+    if (transactionStatus === 'capture') {
+      if (fraudStatus === 'accept') {
+        newStatus = 'Diproses';
+      }
+    } else if (transactionStatus === 'settlement') {
+      newStatus = 'Diproses';
+    } else if (transactionStatus === 'cancel' || transactionStatus === 'deny' || transactionStatus === 'expire') {
+      newStatus = 'Dibatalkan';
+    } else if (transactionStatus === 'pending') {
+      newStatus = 'Menunggu Pembayaran';
+    }
+
+    if (orderId) {
+      await db.query('UPDATE orders SET status = $1 WHERE id = $2', [newStatus, orderId]);
+    }
+
+    res.status(200).json({ status: 'OK' });
+  } catch (err) {
+    console.error('Error handling midtrans notification:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/products', async (req, res) => {
   try {
@@ -161,7 +199,8 @@ router.post('/orders', async (req, res) => {
   const { customer_id, total_price, items, order_type } = req.body;
   try {
     const finalOrderType = order_type || (items.length > 0 && items[0].type === 'sewa' ? 'sewa' : 'beli');
-        const initialStatus = finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses';
+    const hasMidtrans = Boolean(process.env.MIDTRANS_SERVER_KEY);
+    const initialStatus = hasMidtrans ? 'Menunggu Pembayaran' : (finalOrderType === 'booking' ? 'Menunggu Konfirmasi Admin' : 'Diproses');
 
     const newOrder = await db.query(
       'INSERT INTO orders (customer_id, total_price, status, order_type) VALUES ($1, $2, $3, $4) RETURNING id',
@@ -176,10 +215,92 @@ router.post('/orders', async (req, res) => {
         [orderId, productId, item.qty, item.price, item.name, item.image_url || '', item.type || 'beli']
       );
     }
-    res.status(201).json({ message: 'Checkout berhasil', order_id: orderId });
+
+    let snapToken = null;
+    let redirectUrl = null;
+
+    if (hasMidtrans) {
+      try {
+        const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [customer_id]);
+        const customer = userRes.rows[0] || {};
+
+        const parameter = {
+          transaction_details: {
+            order_id: `ORD-${orderId}-${Date.now()}`,
+            gross_amount: Math.round(Number(total_price))
+          },
+          customer_details: {
+            first_name: customer.name || 'Customer',
+            email: customer.email || 'customer@example.com',
+            phone: customer.phone || '08123456789'
+          },
+          item_details: items.map((item, idx) => ({
+            id: String(item.id || idx).substring(0, 50),
+            price: Math.round(Number(item.price)),
+            quantity: Number(item.qty || 1),
+            name: String(item.name || 'Item').substring(0, 50)
+          }))
+        };
+
+        const transaction = await snap.createTransaction(parameter);
+        snapToken = transaction.token;
+        redirectUrl = transaction.redirect_url;
+      } catch (midtransErr) {
+        console.error('Midtrans transaction creation error:', midtransErr.message);
+      }
+    }
+
+    res.status(201).json({ 
+      message: 'Checkout berhasil', 
+      order_id: orderId,
+      snap_token: snapToken,
+      redirect_url: redirectUrl
+    });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal memproses pesanan' });
+  }
+});
+
+// Endpoint untuk membayar ulang pesanan yang berstatus 'Menunggu Pembayaran'
+router.post('/orders/:id/pay', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const orderRes = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pesanan tidak ditemukan' });
+    }
+    const order = orderRes.rows[0];
+
+    const userRes = await db.query('SELECT name, email, phone FROM users WHERE id = $1', [order.customer_id]);
+    const customer = userRes.rows[0] || {};
+
+    const grossAmount = Math.round(Number(order.total_price));
+    const parameter = {
+      transaction_details: {
+        order_id: `ORD-${order.id}-${Date.now()}`,
+        gross_amount: grossAmount
+      },
+      customer_details: {
+        first_name: customer.name || 'Customer',
+        email: customer.email || 'customer@example.com',
+        phone: customer.phone || '08123456789'
+      },
+      item_details: [
+        {
+          id: `ORD-${order.id}`,
+          price: grossAmount,
+          quantity: 1,
+          name: `Pembayaran Pesanan #ORD-${order.id}`
+        }
+      ]
+    };
+
+    const transaction = await snap.createTransaction(parameter);
+    res.json({ snap_token: transaction.token, redirect_url: transaction.redirect_url });
+  } catch (err) {
+    console.error('Error generating pay token:', err.message);
+    res.status(500).json({ error: 'Gagal memproses pembayaran: ' + err.message });
   }
 });
 
@@ -286,6 +407,16 @@ router.put('/orders/:id/status', async (req, res) => {
   }
 });
 
+router.delete('/orders/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM orders WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Pesanan berhasil dihapus' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Gagal menghapus pesanan' });
+  }
+});
+
 router.get('/admin/stats', async (req, res) => {
   try {
     const usersRes = await db.query("SELECT COUNT(*) FROM users WHERE role = 'customer'");
@@ -299,80 +430,6 @@ router.get('/admin/stats', async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ error: 'Gagal mengambil statistik bisnis' });
-  }
-});
-
-
-router.get('/bundles', async (req, res) => {
-  try {
-    const bundlesResult = await db.query('SELECT * FROM bundles ORDER BY id ASC');
-    const bundles = bundlesResult.rows;
-
-    const fullBundles = await Promise.all(bundles.map(async (bundle) => {
-      const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
-      return {
-        id: bundle.bundle_key,
-        db_id: bundle.id, 
-        label: bundle.label,
-        name: bundle.name,
-        tag: bundle.tag,
-        badge: bundle.badge,
-        disc: bundle.discount_percentage,
-        icon: bundle.icon,
-        color: bundle.color,
-        items: itemsResult.rows.map(item => ({
-          id: item.id,
-          i: item.icon,
-          n: item.item_name,
-          d: item.item_desc,
-          p: Number(item.price)
-        }))
-      };
-    }));
-
-    res.json(fullBundles);
-  } catch (err) {
-    console.error('Error get bundles:', err.message);
-    res.status(500).json({ error: 'Gagal mengambil data bundling' });
-  }
-});
-
-router.post('/admin/bundles', async (req, res) => {
-  const { bundle_key, label, name, tag, badge, discount_percentage, items } = req.body;
-  
-  try {
-    await db.query('BEGIN');
-
-    const bundleQuery = `
-      INSERT INTO bundles (bundle_key, label, name, tag, badge, discount_percentage) 
-      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;
-    `;
-    const bundleRes = await db.query(bundleQuery, [
-      bundle_key || 'paket-' + Date.now(), 
-      label || 'PAKET HEMAT', 
-      name, 
-      tag, 
-      badge, 
-      discount_percentage || 0
-    ]);
-    
-    const bundleId = bundleRes.rows[0].id;
-
-    if (items && items.length > 0) {
-      for (let item of items) {
-        await db.query(
-          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price) VALUES ($1, $2, $3, $4)',
-          [bundleId, item.name, item.desc || '', item.price || 0]
-        );
-      }
-    }
-
-    await db.query('COMMIT');
-    res.status(201).json({ message: 'Paket bundling berhasil dibuat!' });
-  } catch (err) {
-    await db.query('ROLLBACK');
-    console.error('Error add bundle:', err.message);
-    res.status(500).json({ error: 'Gagal membuat paket bundling' });
   }
 });
 
