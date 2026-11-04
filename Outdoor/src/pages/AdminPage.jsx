@@ -4,12 +4,34 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { AdminOrders } from '../components/AdminOrders';
 
+const PRESET_MOUNTAINS = [
+  'Gede Pangrango',
+  'Rinjani',
+  'Semeru',
+  'Merbabu',
+  'Prau',
+  'Sindoro',
+  'Kerinci',
+  'Papandayan'
+];
+
+const PRESET_SKILLS = [
+  'First Aid / P3K',
+  'Navigasi Darat',
+  'Fotografi Outdoor',
+  'Masak Gunung',
+  'Bahasa Inggris',
+  'SAR & Rescue',
+  'Manajemen Logistik',
+  'Porter Support'
+];
+
 export const AdminPage = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState('pesanan');
-  const [stats, setStats] = useState({ totalUsers: 0, totalOrders: 0, totalRevenue: 0 });
+  const [stats, setStats] = useState({ totalUsers: 0, totalOrders: 0, totalRevenue: 0, totalGuides: 0 });
 
   // --- STATE PRODUK ---
   const [products, setProducts] = useState([]);
@@ -19,7 +41,7 @@ export const AdminPage = () => {
     name: '', category: 'TENDA', price: '', stock: '', image_url: '', description: '', is_rentable: false, rent_price_per_day: ''
   });
 
-  // --- STATE BUNDLING (Ditambah properti type) ---
+  // --- STATE BUNDLING ---
   const [bundles, setBundles] = useState([]);
   const [bundleForm, setBundleForm] = useState({
     bundle_key: '',
@@ -28,13 +50,33 @@ export const AdminPage = () => {
     tag: '',
     badge: 'Hemat 20%',
     discount_percentage: 20,
-    type: 'beli' // Pilihan: 'beli' atau 'sewa'
+    type: 'beli'
   });
   
   const [bundleItems, setBundleItems] = useState([
     { name: '', desc: '', price: '', icon: 'fa-tent' },
     { name: '', desc: '', price: '', icon: 'fa-backpack' }
   ]);
+
+  // --- STATE PEMANDU (GUIDE) ---
+  const [guides, setGuides] = useState([]);
+  const [isEditingGuide, setIsEditingGuide] = useState(false);
+  const [editGuideId, setEditGuideId] = useState(null);
+  const [guideSearch, setGuideSearch] = useState('');
+  const [guideFilterVerified, setGuideFilterVerified] = useState('ALL');
+  const [customSkillInput, setCustomSkillInput] = useState('');
+  const [guideForm, setGuideForm] = useState({
+    name: '',
+    mountain_region: '',
+    description: '',
+    price_per_day: '',
+    rating: '5.0',
+    total_trips: '0',
+    experience_years: '1',
+    verified: true,
+    skills: ['First Aid / P3K', 'Navigasi Darat'],
+    avatar_url: ''
+  });
 
   useEffect(() => {
     if (!user || user.role !== 'admin') {
@@ -45,7 +87,7 @@ export const AdminPage = () => {
   const fetchData = () => {
     fetch('http://localhost:5000/api/products')
       .then(res => res.json())
-      .then(data => setProducts(data))
+      .then(data => setProducts(Array.isArray(data) ? data : []))
       .catch(err => console.error(err));
       
     fetch('http://localhost:5000/api/admin/stats')
@@ -55,8 +97,13 @@ export const AdminPage = () => {
 
     fetch('http://localhost:5000/api/bundles')
       .then(res => res.json())
-      .then(data => setBundles(data))
+      .then(data => setBundles(Array.isArray(data) ? data : []))
       .catch(err => console.error('Gagal memuat bundling:', err));
+
+    fetch('http://localhost:5000/api/guides')
+      .then(res => res.json())
+      .then(data => setGuides(Array.isArray(data) ? data : []))
+      .catch(err => console.error('Gagal memuat data pemandu:', err));
   };
 
   useEffect(() => {
@@ -65,6 +112,7 @@ export const AdminPage = () => {
     }
   }, [user]);
 
+  // --- HANDLERS PRODUK ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -110,6 +158,7 @@ export const AdminPage = () => {
     }
   };
 
+  // --- HANDLERS BUNDLING ---
   const handleAddItemRow = () => {
     setBundleItems([...bundleItems, { name: '', desc: '', price: '', icon: 'fa-check' }]);
   };
@@ -163,6 +212,132 @@ export const AdminPage = () => {
     }
   };
 
+  // --- HANDLERS PEMANDU (GUIDE) ---
+  const handleToggleMountainChip = (mountain) => {
+    const currentRegions = guideForm.mountain_region
+      ? guideForm.mountain_region.split(',').map(m => m.trim()).filter(Boolean)
+      : [];
+    const exists = currentRegions.some(m => m.toLowerCase() === mountain.toLowerCase());
+    const nextRegions = exists
+      ? currentRegions.filter(m => m.toLowerCase() !== mountain.toLowerCase())
+      : [...currentRegions, mountain];
+    setGuideForm({ ...guideForm, mountain_region: nextRegions.join(', ') });
+  };
+
+  const handleToggleSkill = (skill) => {
+    const exists = guideForm.skills.includes(skill);
+    const nextSkills = exists
+      ? guideForm.skills.filter(s => s !== skill)
+      : [...guideForm.skills, skill];
+    setGuideForm({ ...guideForm, skills: nextSkills });
+  };
+
+  const handleAddCustomSkill = () => {
+    const trimmed = customSkillInput.trim();
+    if (!trimmed) return;
+    if (!guideForm.skills.includes(trimmed)) {
+      setGuideForm({ ...guideForm, skills: [...guideForm.skills, trimmed] });
+    }
+    setCustomSkillInput('');
+  };
+
+  const handleGuideSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const url = isEditingGuide
+        ? `http://localhost:5000/api/admin/guides/${editGuideId}`
+        : 'http://localhost:5000/api/admin/guides';
+      const method = isEditingGuide ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(guideForm)
+      });
+
+      if (response.ok) {
+        alert(isEditingGuide ? 'Data pemandu berhasil diperbarui!' : 'Pemandu baru berhasil ditambahkan!');
+        handleGuideReset();
+        fetchData();
+      } else {
+        alert('Gagal menyimpan data pemandu. Periksa kembali isian Anda.');
+      }
+    } catch (err) {
+      console.error('Error submit guide:', err);
+    }
+  };
+
+  const handleEditGuideClick = (guide) => {
+    setIsEditingGuide(true);
+    setEditGuideId(guide.id);
+    setGuideForm({
+      name: guide.name || '',
+      mountain_region: guide.mountain_region || '',
+      description: guide.description || '',
+      price_per_day: guide.price_per_day || '',
+      rating: guide.rating || '5.0',
+      total_trips: guide.total_trips ?? '0',
+      experience_years: guide.experience_years ?? '1',
+      verified: guide.verified !== undefined ? guide.verified : true,
+      skills: Array.isArray(guide.skills) ? guide.skills : [],
+      avatar_url: guide.avatar_url || ''
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleGuideReset = () => {
+    setIsEditingGuide(false);
+    setEditGuideId(null);
+    setCustomSkillInput('');
+    setGuideForm({
+      name: '',
+      mountain_region: '',
+      description: '',
+      price_per_day: '',
+      rating: '5.0',
+      total_trips: '0',
+      experience_years: '1',
+      verified: true,
+      skills: ['First Aid / P3K', 'Navigasi Darat'],
+      avatar_url: ''
+    });
+  };
+
+  const handleDeleteGuide = async (id) => {
+    if (confirm('Yakin ingin menghapus pemandu ini dari sistem?')) {
+      await fetch(`http://localhost:5000/api/admin/guides/${id}`, { method: 'DELETE' });
+      fetchData();
+    }
+  };
+
+  const handleQuickToggleVerify = async (guide) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/admin/guides/${guide.id}/verify`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verified: !guide.verified })
+      });
+      if (response.ok) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Gagal mengubah verifikasi:', err);
+    }
+  };
+
+  const filteredGuides = guides.filter((g) => {
+    const matchSearch =
+      g.name?.toLowerCase().includes(guideSearch.toLowerCase()) ||
+      g.mountain_region?.toLowerCase().includes(guideSearch.toLowerCase());
+    const matchVerify =
+      guideFilterVerified === 'ALL'
+        ? true
+        : guideFilterVerified === 'VERIFIED'
+          ? Boolean(g.verified)
+          : !g.verified;
+    return matchSearch && matchVerify;
+  });
+
   if (!user || user.role !== 'admin') return null;
 
   return (
@@ -172,31 +347,44 @@ export const AdminPage = () => {
       </h1>
 
       {/* DASHBOARD ANALYTICS CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-5 relative overflow-hidden">
-          <div className="absolute -right-4 -bottom-4 text-brand-50 opacity-50 text-8xl pointer-events-none"><i className="fa-solid fa-wallet"></i></div>
-          <div className="h-14 w-14 rounded-2xl bg-brand-50 text-brand-600 flex items-center justify-center text-2xl flex-shrink-0 z-10"><i className="fa-solid fa-rupiah-sign"></i></div>
-          <div className="z-10">
-            <p className="text-gray-500 text-sm font-bold uppercase tracking-wider mb-1">Total Pendapatan</p>
-            <h3 className="text-2xl font-black text-gray-800">Rp {stats.totalRevenue.toLocaleString('id-ID')}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-4 relative overflow-hidden">
+          <div className="absolute -right-4 -bottom-4 text-brand-50 opacity-50 text-7xl pointer-events-none"><i className="fa-solid fa-wallet"></i></div>
+          <div className="h-13 w-13 rounded-2xl bg-brand-50 text-brand-600 flex items-center justify-center text-xl flex-shrink-0 z-10"><i className="fa-solid fa-rupiah-sign"></i></div>
+          <div className="z-10 min-w-0">
+            <p className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Total Pendapatan</p>
+            <h3 className="text-xl font-black text-gray-800 truncate">Rp {Number(stats.totalRevenue || 0).toLocaleString('id-ID')}</h3>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-5 relative overflow-hidden">
-          <div className="absolute -right-4 -bottom-4 text-orange-50 opacity-50 text-8xl pointer-events-none"><i className="fa-solid fa-boxes-stacked"></i></div>
-          <div className="h-14 w-14 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center text-2xl flex-shrink-0 z-10"><i className="fa-solid fa-cart-flatbed"></i></div>
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-4 relative overflow-hidden">
+          <div className="absolute -right-4 -bottom-4 text-orange-50 opacity-50 text-7xl pointer-events-none"><i className="fa-solid fa-boxes-stacked"></i></div>
+          <div className="h-13 w-13 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center text-xl flex-shrink-0 z-10"><i className="fa-solid fa-cart-flatbed"></i></div>
           <div className="z-10">
-            <p className="text-gray-500 text-sm font-bold uppercase tracking-wider mb-1">Total Pesanan</p>
-            <h3 className="text-2xl font-black text-gray-800">{stats.totalOrders} Transaksi</h3>
+            <p className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Total Pesanan</p>
+            <h3 className="text-xl font-black text-gray-800">{stats.totalOrders} Transaksi</h3>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-5 relative overflow-hidden">
-          <div className="absolute -right-4 -bottom-4 text-blue-50 opacity-50 text-8xl pointer-events-none"><i className="fa-solid fa-users"></i></div>
-          <div className="h-14 w-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl flex-shrink-0 z-10"><i className="fa-solid fa-users"></i></div>
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-4 relative overflow-hidden">
+          <div className="absolute -right-4 -bottom-4 text-blue-50 opacity-50 text-7xl pointer-events-none"><i className="fa-solid fa-users"></i></div>
+          <div className="h-13 w-13 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl flex-shrink-0 z-10"><i className="fa-solid fa-users"></i></div>
           <div className="z-10">
-            <p className="text-gray-500 text-sm font-bold uppercase tracking-wider mb-1">Pelanggan Aktif</p>
-            <h3 className="text-2xl font-black text-gray-800">{stats.totalUsers} Akun</h3>
+            <p className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Pelanggan Aktif</p>
+            <h3 className="text-xl font-black text-gray-800">{stats.totalUsers} Akun</h3>
+          </div>
+        </div>
+
+        <div
+          onClick={() => setActiveTab('pemandu')}
+          title="Klik untuk Kelola Pemandu"
+          className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-center gap-4 relative overflow-hidden cursor-pointer hover:border-brand-300 hover:shadow-md transition"
+        >
+          <div className="absolute -right-4 -bottom-4 text-brand-50 opacity-60 text-7xl pointer-events-none"><i className="fa-solid fa-person-hiking"></i></div>
+          <div className="h-13 w-13 rounded-2xl bg-brand-50 text-brand-700 flex items-center justify-center text-xl flex-shrink-0 z-10"><i className="fa-solid fa-map-location-dot"></i></div>
+          <div className="z-10">
+            <p className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">Pemandu Aktif</p>
+            <h3 className="text-xl font-black text-gray-800">{guides.length || stats.totalGuides || 0} Guide</h3>
           </div>
         </div>
       </div>
@@ -211,6 +399,10 @@ export const AdminPage = () => {
         </button>
         <button onClick={() => setActiveTab('bundling')} className={`pb-3 px-4 font-bold text-sm whitespace-nowrap border-b-2 transition ${activeTab === 'bundling' ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <i className="fa-solid fa-gift mr-2"></i> Kelola Bundling
+        </button>
+        <button onClick={() => setActiveTab('pemandu')} className={`pb-3 px-4 font-bold text-sm whitespace-nowrap border-b-2 transition flex items-center gap-2 ${activeTab === 'pemandu' ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <i className="fa-solid fa-person-hiking"></i> Kelola Pemandu
+          <span className="bg-brand-100 text-brand-700 text-[10px] px-2 py-0.5 rounded-full font-bold">{guides.length}</span>
         </button>
       </div>
 
@@ -234,6 +426,10 @@ export const AdminPage = () => {
             <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Harga (Rp)</label><input type="number" required value={form.price} onChange={e => setForm({...form, price: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Stok</label><input type="number" required value={form.stock} onChange={e => setForm({...form, stock: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
             <div className="sm:col-span-2"><label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Gambar</label><input type="text" value={form.image_url} onChange={e => setForm({...form, image_url: e.target.value})} className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500" /></div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Deskripsi Produk</label>
+              <textarea rows="2" value={form.description} onChange={e => setForm({...form, description: e.target.value})} placeholder="Spesifikasi alat, kapasitas, bahan, dll..." className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500 resize-none" />
+            </div>
             
             <div className="sm:col-span-2 border-t border-dashed border-gray-200 mt-2 pt-4">
               <label className="flex items-center gap-3 cursor-pointer mb-4">
@@ -294,7 +490,7 @@ export const AdminPage = () => {
             </div>
           </div>
         </div>
-      ) : (
+      ) : activeTab === 'bundling' ? (
         <div className="fade-in">
           <form onSubmit={handleBundleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-10">
             <h2 className="text-xl font-bold text-gray-800 mb-4">Buat Paket Bundling / Promo Baru</h2>
@@ -378,6 +574,486 @@ export const AdminPage = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* TAB KELOLA PEMANDU (GUIDE) */
+        <div className="fade-in">
+          <form
+            onSubmit={handleGuideSubmit}
+            className={`p-6 rounded-2xl shadow-sm border mb-10 grid sm:grid-cols-2 gap-5 transition-colors ${
+              isEditingGuide ? 'bg-orange-50 border-orange-200' : 'bg-white border-gray-100'
+            }`}
+          >
+            <div className="sm:col-span-2 flex flex-wrap justify-between items-center gap-2 pb-2 border-b border-gray-100">
+              <div>
+                <h2 className={`text-xl font-bold flex items-center gap-2 ${isEditingGuide ? 'text-orange-700' : 'text-gray-800'}`}>
+                  <i className={`fa-solid ${isEditingGuide ? 'fa-user-pen text-orange-600' : 'fa-person-hiking text-brand-600'}`}></i>
+                  {isEditingGuide ? 'Edit Profil Pemandu' : 'Tambah Pemandu Gunung Baru'}
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Lengkapi informasi pemandu profesional, wilayah gunung spesialisasi, sertifikasi keahlian, dan tarif harian.
+                </p>
+              </div>
+              {isEditingGuide && (
+                <span className="bg-orange-200 text-orange-800 text-xs font-bold px-3 py-1 rounded-full animate-pulse">
+                  Mode Edit Pemandu Aktif
+                </span>
+              )}
+            </div>
+
+            {/* Nama & Tarif */}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Lengkap Pemandu</label>
+              <input
+                type="text"
+                required
+                placeholder="Contoh: Budi Santoso"
+                value={guideForm.name}
+                onChange={(e) => setGuideForm({ ...guideForm, name: e.target.value })}
+                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Tarif Jasa Per Hari (Rp)</label>
+              <input
+                type="number"
+                required
+                placeholder="Contoh: 350000"
+                value={guideForm.price_per_day}
+                onChange={(e) => setGuideForm({ ...guideForm, price_per_day: e.target.value })}
+                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+              />
+            </div>
+
+            {/* Gunung Spesialisasi + Chip Cepat */}
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">
+                Gunung / Wilayah Spesialisasi <span className="text-gray-400 font-normal">(Pisahkan dengan koma jika lebih dari satu)</span>
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="Contoh: Rinjani, Semeru, Gede Pangrango"
+                value={guideForm.mountain_region}
+                onChange={(e) => setGuideForm({ ...guideForm, mountain_region: e.target.value })}
+                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500 mb-2"
+              />
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-gray-400 font-semibold mr-1">Pilihan Cepat:</span>
+                {PRESET_MOUNTAINS.map((m) => {
+                  const isSelected = guideForm.mountain_region
+                    .toLowerCase()
+                    .split(',')
+                    .map(s => s.trim())
+                    .includes(m.toLowerCase());
+                  return (
+                    <button
+                      type="button"
+                      key={m}
+                      onClick={() => handleToggleMountainChip(m)}
+                      className={`text-[11px] px-2.5 py-1 rounded-full font-semibold border transition ${
+                        isSelected
+                          ? 'bg-brand-600 text-white border-brand-600 shadow-sm'
+                          : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-brand-50 hover:text-brand-700'
+                      }`}
+                    >
+                      <i className={`fa-solid ${isSelected ? 'fa-check mr-1' : 'fa-mountain mr-1 opacity-60'}`}></i>
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Pengalaman, Total Trip, Rating */}
+            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Pengalaman (Tahun)</label>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={guideForm.experience_years}
+                  onChange={(e) => setGuideForm({ ...guideForm, experience_years: e.target.value })}
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Total Trip Selesai</label>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  value={guideForm.total_trips}
+                  onChange={(e) => setGuideForm({ ...guideForm, total_trips: e.target.value })}
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Rating Pemandu (1.0 - 5.0)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="1"
+                  max="5"
+                  required
+                  value={guideForm.rating}
+                  onChange={(e) => setGuideForm({ ...guideForm, rating: e.target.value })}
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+                />
+              </div>
+            </div>
+
+            {/* Deskripsi / Bio Lengkap Pemandu */}
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">
+                Deskripsi / Bio & Pengalaman Pemandu
+              </label>
+              <textarea
+                rows="3"
+                placeholder="Ceritakan pengalaman pemandu, jalur pendakian yang dikuasai, lisensi resmi (APGI), bahasa yang dikuasai, atau catatan layanan khusus..."
+                value={guideForm.description}
+                onChange={(e) => setGuideForm({ ...guideForm, description: e.target.value })}
+                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500 resize-none text-sm"
+              />
+            </div>
+
+            {/* URL Foto Avatar + Preview */}
+            <div className="sm:col-span-2 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <div className="flex-grow w-full">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Foto Profil / Avatar</label>
+                <input
+                  type="text"
+                  placeholder="https://images.unsplash.com/..."
+                  value={guideForm.avatar_url}
+                  onChange={(e) => setGuideForm({ ...guideForm, avatar_url: e.target.value })}
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 outline-none focus:border-brand-500"
+                />
+              </div>
+              <div className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-2 flex-shrink-0">
+                <div className="h-12 w-12 rounded-xl bg-brand-100 overflow-hidden border border-brand-200 flex items-center justify-center flex-shrink-0">
+                  {guideForm.avatar_url ? (
+                    <img src={guideForm.avatar_url} alt="Preview" className="h-full w-full object-cover" />
+                  ) : (
+                    <i className="fa-solid fa-person-hiking text-brand-600 text-lg"></i>
+                  )}
+                </div>
+                <div className="text-xs">
+                  <p className="font-bold text-gray-700">Preview Avatar</p>
+                  <p className="text-gray-400 text-[11px]">{guideForm.name || 'Nama Pemandu'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Keahlian / Skills Interaktif */}
+            <div className="sm:col-span-2 border-t border-dashed border-gray-200 pt-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
+                Keahlian & Sertifikasi Pemandu ({guideForm.skills.length} Dipilih)
+              </label>
+
+              {/* Preset Skills */}
+              <div className="flex flex-wrap gap-2 mb-3">
+                {PRESET_SKILLS.map((skill) => {
+                  const active = guideForm.skills.includes(skill);
+                  return (
+                    <button
+                      type="button"
+                      key={skill}
+                      onClick={() => handleToggleSkill(skill)}
+                      className={`text-xs px-3 py-1.5 rounded-xl font-semibold border transition flex items-center gap-1.5 ${
+                        active
+                          ? 'bg-brand-600 text-white border-brand-600 shadow-sm'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <i className={`fa-solid ${active ? 'fa-circle-check' : 'fa-plus text-gray-400'}`}></i>
+                      {skill}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Input Skill Tambahan */}
+              <div className="flex gap-2 mb-3">
+                <input
+                  type="text"
+                  placeholder="Tambah keahlian lain (misal: Fotografi Drone, Bahasa Jepang)..."
+                  value={customSkillInput}
+                  onChange={(e) => setCustomSkillInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCustomSkill();
+                    }
+                  }}
+                  className="flex-grow bg-white border border-gray-200 rounded-xl px-4 py-2 text-sm outline-none focus:border-brand-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddCustomSkill}
+                  className="bg-brand-50 text-brand-700 hover:bg-brand-100 font-bold px-4 py-2 rounded-xl text-xs transition flex-shrink-0"
+                >
+                  <i className="fa-solid fa-plus mr-1"></i> Tambah Keahlian
+                </button>
+              </div>
+
+              {/* Daftar Chip Skill Aktif */}
+              {guideForm.skills.length > 0 && (
+                <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 flex flex-wrap gap-2 items-center">
+                  <span className="text-[11px] font-bold text-gray-400 uppercase mr-1">Keahlian Aktif:</span>
+                  {guideForm.skills.map((skill, idx) => (
+                    <span
+                      key={idx}
+                      className="bg-white border border-brand-200 text-brand-800 text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-2 shadow-sm"
+                    >
+                      {skill}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSkill(skill)}
+                        className="text-gray-400 hover:text-red-500 transition"
+                        title="Hapus keahlian"
+                      >
+                        <i className="fa-solid fa-xmark"></i>
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Status Verifikasi */}
+            <div className="sm:col-span-2 border-t border-dashed border-gray-200 pt-4">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={guideForm.verified}
+                  onChange={(e) => setGuideForm({ ...guideForm, verified: e.target.checked })}
+                  className="w-5 h-5 text-brand-600 rounded border-gray-300 focus:ring-brand-500"
+                />
+                <div>
+                  <span className="font-bold text-gray-800 text-sm flex items-center gap-1.5">
+                    Pemandu Terverifikasi Resmi
+                    <span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-md border border-blue-100 uppercase">
+                      <i className="fa-solid fa-circle-check mr-1"></i>Terverifikasi
+                    </span>
+                  </span>
+                  <span className="block text-xs text-gray-500">
+                    Pemandu telah lulus seleksi lisensi & keamanan standar Outdoor Warrent.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {/* Tombol Submit / Batal */}
+            <div className="sm:col-span-2 flex gap-3 mt-2">
+              <button
+                type="submit"
+                className={`${
+                  isEditingGuide ? 'bg-orange-500 hover:bg-orange-600' : 'bg-brand-600 hover:bg-brand-700'
+                } text-white font-bold px-6 py-3 rounded-xl transition shadow-md flex-grow`}
+              >
+                <i className={`fa-solid ${isEditingGuide ? 'fa-floppy-disk' : 'fa-plus'} mr-2`}></i>
+                {isEditingGuide ? 'Simpan Perubahan Pemandu' : 'Simpan & Publikasikan Pemandu'}
+              </button>
+              {isEditingGuide && (
+                <button
+                  type="button"
+                  onClick={handleGuideReset}
+                  className="bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold px-6 py-3 rounded-xl transition shadow-sm"
+                >
+                  Batal
+                </button>
+              )}
+            </div>
+          </form>
+
+          {/* DAFTAR PEMANDU DI DATABASE */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden p-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                  Daftar Pemandu Gunung Terdaftar
+                  <span className="text-xs bg-brand-50 text-brand-700 px-3 py-1 rounded-full font-bold">
+                    {filteredGuides.length} dari {guides.length} Guide
+                  </span>
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Klik lencana status untuk mengubah verifikasi pemandu secara instan, atau klik tombol aksi untuk mengedit/menghapus.
+                </p>
+              </div>
+
+              {/* Filter & Pencarian Pemandu */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                  <input
+                    type="text"
+                    placeholder="Cari nama / gunung..."
+                    value={guideSearch}
+                    onChange={(e) => setGuideSearch(e.target.value)}
+                    className="pl-9 pr-4 py-2 text-xs border border-gray-200 rounded-xl outline-none focus:border-brand-500 bg-gray-50 focus:bg-white transition"
+                  />
+                </div>
+                <select
+                  value={guideFilterVerified}
+                  onChange={(e) => setGuideFilterVerified(e.target.value)}
+                  className="text-xs font-bold border border-gray-200 rounded-xl px-3 py-2 outline-none focus:border-brand-500 bg-white text-gray-700"
+                >
+                  <option value="ALL">Semua Status</option>
+                  <option value="VERIFIED">Terverifikasi</option>
+                  <option value="UNVERIFIED">Belum Verifikasi</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-gray-600">
+                <thead className="bg-gray-50 text-gray-700 uppercase text-xs">
+                  <tr>
+                    <th className="p-3">Profil Pemandu</th>
+                    <th className="p-3">Gunung Spesialisasi</th>
+                    <th className="p-3">Statistik & Rekam Jejak</th>
+                    <th className="p-3">Keahlian</th>
+                    <th className="p-3">Tarif / Hari</th>
+                    <th className="p-3 text-center">Status</th>
+                    <th className="p-3 text-center">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredGuides.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" className="p-10 text-center text-gray-400">
+                        <i className="fa-solid fa-person-hiking text-4xl mb-2 text-gray-300 block"></i>
+                        Tidak ada data pemandu yang sesuai.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredGuides.map((g) => (
+                      <tr key={g.id} className="hover:bg-brand-50/40 transition align-middle">
+                        <td className="p-3">
+                          <div className="flex items-center gap-3">
+                            <div className="h-12 w-12 rounded-xl bg-gray-100 overflow-hidden flex-shrink-0 border border-brand-100">
+                              <img
+                                src={g.avatar_url || 'https://placehold.co/100x100/15803d/ffffff?text=Guide'}
+                                alt={g.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </div>
+                            <div>
+                              <p className="font-bold text-gray-900">{g.name}</p>
+                              <p className="text-[11px] text-gray-400">ID: #GDE-{g.id}</p>
+                              {g.description && (
+                                <p className="text-[11px] text-gray-500 line-clamp-1 max-w-[220px] mt-0.5">{g.description}</p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="p-3">
+                          <div className="flex flex-wrap gap-1 max-w-xs">
+                            {(g.mountain_region || '-')
+                              .split(/,|&/)
+                              .map((m) => m.trim())
+                              .filter(Boolean)
+                              .map((m, idx) => (
+                                <span
+                                  key={idx}
+                                  className="bg-brand-50 text-brand-700 border border-brand-100 text-[11px] font-bold px-2.5 py-0.5 rounded-lg"
+                                >
+                                  <i className="fa-solid fa-mountain text-[9px] mr-1"></i>
+                                  {m}
+                                </span>
+                              ))}
+                          </div>
+                        </td>
+
+                        <td className="p-3 whitespace-nowrap">
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="font-bold text-gray-800 flex items-center gap-1 bg-yellow-50 border border-yellow-200 px-2 py-0.5 rounded-md">
+                              <i className="fa-solid fa-star text-yellow-400"></i> {g.rating}
+                            </span>
+                            <span className="text-gray-500">{g.experience_years} thn</span>
+                            <span className="text-gray-400">•</span>
+                            <span className="text-gray-500">{g.total_trips} trip</span>
+                          </div>
+                        </td>
+
+                        <td className="p-3 max-w-xs">
+                          <div className="flex flex-wrap gap-1">
+                            {Array.isArray(g.skills) && g.skills.length > 0 ? (
+                              g.skills.map((skill, idx) => (
+                                <span
+                                  key={idx}
+                                  className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2 py-0.5 rounded-full font-medium"
+                                >
+                                  {skill}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">-</span>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="p-3 whitespace-nowrap">
+                          <span className="text-brand-700 font-black">
+                            Rp {Number(g.price_per_day || 0).toLocaleString('id-ID')}
+                          </span>
+                        </td>
+
+                        <td className="p-3 text-center whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickToggleVerify(g)}
+                            title="Klik untuk mengubah status verifikasi"
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider border transition ${
+                              g.verified
+                                ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                                : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
+                            }`}
+                          >
+                            {g.verified ? (
+                              <>
+                                <i className="fa-solid fa-circle-check mr-1"></i>Terverifikasi
+                              </>
+                            ) : (
+                              <>
+                                <i className="fa-regular fa-clock mr-1"></i>Belum Verifikasi
+                              </>
+                            )}
+                          </button>
+                        </td>
+
+                        <td className="p-3 text-center whitespace-nowrap">
+                          <div className="flex justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleEditGuideClick(g)}
+                              className="bg-orange-50 text-orange-600 hover:bg-orange-100 h-8 w-8 rounded-lg transition"
+                              title="Edit Pemandu"
+                            >
+                              <i className="fa-solid fa-pen"></i>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteGuide(g.id)}
+                              className="bg-red-50 text-red-600 hover:bg-red-100 h-8 w-8 rounded-lg transition"
+                              title="Hapus Pemandu"
+                            >
+                              <i className="fa-solid fa-trash"></i>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

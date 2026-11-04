@@ -1,6 +1,7 @@
 // src/components/GuideSection.jsx
 import { useState, useEffect } from 'react';
 import { useCart } from '../context/CartContext';
+import { BookingModal } from './BookingModal';
 
 const formatDate = (date) => {
   const d = new Date(date);
@@ -17,6 +18,10 @@ export const GuideSection = () => {
   const [loading, setLoading] = useState(true);
   
   const [selectedMountain, setSelectedMountain] = useState('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('rating');
+  const [onlyVerified, setOnlyVerified] = useState(false);
+  const [selectedGuideForModal, setSelectedGuideForModal] = useState(null);
   
   const today = new Date();
   const defaultEnd = new Date();
@@ -49,7 +54,7 @@ export const GuideSection = () => {
     fetch('http://localhost:5000/api/guides')
       .then((res) => res.json())
       .then((data) => {
-        setGuides(data);
+        setGuides(Array.isArray(data) ? data : []);
         setLoading(false);
       })
       .catch((err) => {
@@ -66,13 +71,32 @@ export const GuideSection = () => {
     )
   );
 
-  const filteredGuides = guides.filter(guide => {
-    if (selectedMountain === 'ALL') return true;
-    if (!guide.mountain_region) return false;
-    return guide.mountain_region.toUpperCase().includes(selectedMountain.toUpperCase());
-  });
+  const filteredGuides = guides
+    .filter(guide => {
+      if (selectedMountain !== 'ALL') {
+        if (!guide.mountain_region) return false;
+        if (!guide.mountain_region.toUpperCase().includes(selectedMountain.toUpperCase())) return false;
+      }
+      if (onlyVerified && !guide.verified) return false;
+      if (searchQuery.trim() !== '') {
+        const q = searchQuery.toLowerCase();
+        const matchName = guide.name?.toLowerCase().includes(q);
+        const matchRegion = guide.mountain_region?.toLowerCase().includes(q);
+        const matchSkills = Array.isArray(guide.skills) && guide.skills.some(s => s.toLowerCase().includes(q));
+        if (!matchName && !matchRegion && !matchSkills) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'rating') return Number(b.rating || 0) - Number(a.rating || 0);
+      if (sortBy === 'experience') return Number(b.experience_years || 0) - Number(a.experience_years || 0);
+      if (sortBy === 'trips') return Number(b.total_trips || 0) - Number(a.total_trips || 0);
+      if (sortBy === 'price_asc') return Number(a.price_per_day || 0) - Number(b.price_per_day || 0);
+      if (sortBy === 'price_desc') return Number(b.price_per_day || 0) - Number(a.price_per_day || 0);
+      return 0;
+    });
 
-  const handleBookGuide = (guide) => {
+  const handleQuickBookGuide = (guide) => {
     const totalCost = Number(guide.price_per_day) * days;
     const displayDate = `${startDate.split('-').reverse().join('/')} s/d ${endDate.split('-').reverse().join('/')}`;
 
@@ -89,7 +113,7 @@ export const GuideSection = () => {
   return (
     <section className="tab-content block fade-in">
       
-      <div className="bg-brand-800 text-white rounded-3xl p-6 sm:p-8 mb-8 shadow-xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
+      <div className="bg-brand-800 text-white rounded-3xl p-6 sm:p-8 mb-6 shadow-xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
         <i className="fa-solid fa-map-location-dot absolute -right-4 -bottom-6 text-[10rem] opacity-10 -rotate-12 pointer-events-none"></i>
         
         <div className="relative z-10 md:w-1/3">
@@ -159,12 +183,52 @@ export const GuideSection = () => {
         </div>
       </div>
 
+      {/* BAR FILTER, PENCARIAN & PENGURUTAN GUIDE */}
+      <div className="bg-white rounded-2xl p-4 mb-6 shadow-sm border border-gray-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="relative flex-grow max-w-md">
+          <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+          <input
+            type="text"
+            placeholder="Cari nama pemandu, gunung, atau keahlian (cth: Fotografi, P3K)..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 text-xs sm:text-sm bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-brand-500 focus:bg-white transition"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setOnlyVerified(!onlyVerified)}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 ${
+              onlyVerified
+                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            <i className="fa-solid fa-circle-check"></i> Hanya Terverifikasi
+          </button>
+
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="bg-white border border-gray-200 rounded-xl px-3.5 py-2 text-xs font-bold text-gray-700 outline-none focus:border-brand-500"
+          >
+            <option value="rating">Urutkan: Rating Tertinggi</option>
+            <option value="experience">Urutkan: Pengalaman Terlama</option>
+            <option value="trips">Urutkan: Trip Terbanyak</option>
+            <option value="price_asc">Urutkan: Tarif Termurah</option>
+            <option value="price_desc">Urutkan: Tarif Tertinggi</option>
+          </select>
+        </div>
+      </div>
+
       {loading ? (
         <div className="text-center py-10 text-gray-500">Mencari pemandu yang tersedia...</div>
       ) : filteredGuides.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 shadow-sm">
           <i className="fa-solid fa-person-hiking text-4xl text-gray-300 mb-3"></i>
-          <p className="text-gray-500 text-sm font-medium">Tidak ada pemandu yang tersedia untuk gunung tersebut.</p>
+          <p className="text-gray-500 text-sm font-medium">Tidak ada pemandu yang sesuai dengan kriteria pencarian tersebut.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -183,7 +247,9 @@ export const GuideSection = () => {
                 </div>
                 <div className="pr-4 mt-1">
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{guide.name}</h3>
-                  <p className="text-xs text-brand-600 font-bold uppercase mb-1.5 line-clamp-1">{guide.mountain_region}</p>
+                  <p className="text-xs text-brand-600 font-bold uppercase mb-1.5 line-clamp-1">
+                    <i className="fa-solid fa-mountain text-[10px] mr-1"></i>{guide.mountain_region}
+                  </p>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
                     <span className="flex items-center gap-1 font-semibold text-gray-700"><i className="fa-solid fa-star text-yellow-400"></i> {guide.rating}</span>
                     <span>• {guide.experience_years} thn</span>
@@ -192,31 +258,60 @@ export const GuideSection = () => {
                 </div>
               </div>
               
+              {guide.description && (
+                <p className="text-xs text-gray-500 mb-3 line-clamp-2 leading-relaxed">
+                  {guide.description}
+                </p>
+              )}
+
               {guide.skills && guide.skills.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-4">
-                  {guide.skills.slice(0, 3).map((skill, idx) => (
+                  {guide.skills.slice(0, 4).map((skill, idx) => (
                     <span key={idx} className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2.5 py-0.5 rounded-full font-medium">{skill}</span>
                   ))}
-                  {guide.skills.length > 3 && <span className="bg-gray-50 text-gray-600 border border-gray-200 text-[10px] px-2.5 py-0.5 rounded-full font-medium">+{guide.skills.length - 3}</span>}
+                  {guide.skills.length > 4 && <span className="bg-brand-50 text-brand-700 border border-brand-100 text-[10px] px-2.5 py-0.5 rounded-full font-bold">+{guide.skills.length - 4}</span>}
                 </div>
               )}
               
-              <div className="mt-auto pt-4 border-t border-dashed border-gray-200 flex justify-between items-center">
+              <div className="mt-auto pt-4 border-t border-dashed border-gray-200 flex justify-between items-center gap-2">
                 <div>
                   <p className="text-[10px] text-gray-400 font-bold uppercase">Total Tarif ({days} Hari)</p>
                   <p className="text-base font-black text-brand-700">Rp {(Number(guide.price_per_day) * days).toLocaleString('id-ID')}</p>
                 </div>
-                <button 
-                  onClick={() => handleBookGuide(guide)}
-                  className="bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white transition px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm"
-                >
-                  <i className="fa-solid fa-calendar-check"></i> Booking
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedGuideForModal(guide)}
+                    title="Pilih Opsi Tambahan (Porter / Dokumentasi)"
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 transition px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                  >
+                    <i className="fa-solid fa-sliders"></i> Opsi
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => handleQuickBookGuide(guide)}
+                    className="bg-brand-50 hover:bg-brand-600 text-brand-700 hover:text-white transition px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm"
+                  >
+                    <i className="fa-solid fa-calendar-check"></i> Booking
+                  </button>
+                </div>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      {/* MODAL KONFIGURASI BOOKING & PORTER/DOKUMENTASI */}
+      <BookingModal
+        isOpen={Boolean(selectedGuideForModal)}
+        onClose={() => setSelectedGuideForModal(null)}
+        guide={selectedGuideForModal}
+        initialStartDate={startDate}
+        initialEndDate={endDate}
+        initialDays={days}
+        initialPax={pax}
+        initialMountain={selectedMountain}
+      />
     </section>
   );
 };
