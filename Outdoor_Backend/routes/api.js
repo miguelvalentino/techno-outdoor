@@ -8,6 +8,13 @@ const snap = require('../midtrans');
 const DEFAULT_WORKING_DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
 
 let guideTablesInitialized = false;
+let bundleItemDepositColumnReady = false;
+const ensureBundleItemDepositColumn = async () => {
+  if (bundleItemDepositColumnReady) return;
+  await db.query('ALTER TABLE bundle_items ADD COLUMN IF NOT EXISTS original_price NUMERIC DEFAULT 0');
+  bundleItemDepositColumnReady = true;
+};
+
 const ensureGuideTables = async () => {
   if (guideTablesInitialized) return;
   try {
@@ -357,6 +364,7 @@ router.get('/products', async (req, res) => {
 router.get('/bundles', async (req, res) => {
   const { type } = req.query;
   try {
+    await ensureBundleItemDepositColumn();
     let queryStr = 'SELECT * FROM bundles';
     let queryParams = [];
 
@@ -370,7 +378,18 @@ router.get('/bundles', async (req, res) => {
     const bundles = bundlesResult.rows;
 
     const fullBundles = await Promise.all(bundles.map(async (bundle) => {
-      const itemsResult = await db.query('SELECT * FROM bundle_items WHERE bundle_id = $1', [bundle.id]);
+      const itemsResult = await db.query(
+        `SELECT bi.*,
+                COALESCE(NULLIF(bi.original_price, 0), (
+                  SELECT p.price FROM products p
+                  WHERE LOWER(p.name) = LOWER(bi.item_name)
+                  ORDER BY p.id ASC
+                  LIMIT 1
+                ), 0) AS original_price
+         FROM bundle_items bi
+         WHERE bi.bundle_id = $1`,
+        [bundle.id]
+      );
       return {
         id: bundle.bundle_key,
         db_id: bundle.id,
@@ -387,7 +406,8 @@ router.get('/bundles', async (req, res) => {
           i: item.icon,
           n: item.item_name,
           d: item.item_desc,
-          p: Number(item.price)
+          p: Number(item.price),
+          o: Number(item.original_price || 0)
         }))
       };
     }));
@@ -403,6 +423,7 @@ router.post('/admin/bundles', async (req, res) => {
   const { bundle_key, label, name, tag, badge, discount_percentage, type, items } = req.body;
   
   try {
+    await ensureBundleItemDepositColumn();
     await db.query('BEGIN');
 
     const bundleQuery = `
@@ -424,8 +445,8 @@ router.post('/admin/bundles', async (req, res) => {
     if (items && items.length > 0) {
       for (let item of items) {
         await db.query(
-          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, icon) VALUES ($1, $2, $3, $4, $5)',
-          [bundleId, item.name, item.desc || '', item.price || 0, item.icon || 'fa-check']
+          'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, original_price, icon) VALUES ($1, $2, $3, $4, $5, $6)',
+          [bundleId, item.name, item.desc || '', item.price || 0, item.original_price || 0, item.icon || 'fa-check']
         );
       }
     }
@@ -449,6 +470,7 @@ router.put('/admin/bundles/:id', async (req, res) => {
 
   const client = await db.connect();
   try {
+    await ensureBundleItemDepositColumn();
     await client.query('BEGIN');
     const bundleResult = await client.query(
       `UPDATE bundles
@@ -476,8 +498,8 @@ router.put('/admin/bundles/:id', async (req, res) => {
     await client.query('DELETE FROM bundle_items WHERE bundle_id = $1', [id]);
     for (const item of items) {
       await client.query(
-        'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, icon) VALUES ($1, $2, $3, $4, $5)',
-        [id, item.name, item.desc || '', Number(item.price) || 0, item.icon || 'fa-check']
+        'INSERT INTO bundle_items (bundle_id, item_name, item_desc, price, original_price, icon) VALUES ($1, $2, $3, $4, $5, $6)',
+        [id, item.name, item.desc || '', Number(item.price) || 0, Number(item.original_price) || 0, item.icon || 'fa-check']
       );
     }
 
@@ -1035,9 +1057,12 @@ router.post('/orders', async (req, res) => {
         // Bundling item (id berupa string 'bundle-...')
         const isRent = item.type === 'sewa' || finalOrderType === 'sewa';
         const originalPrice = Number(item.original_price || 0);
-        const depositPerUnit = isRent && originalPrice > 0
-          ? Math.max(0, Math.round(0.5 * originalPrice - unitPrice))
-          : 0;
+        let depositPerUnit = 0;
+        if (isRent) {
+          depositPerUnit = item.deposit_per_unit !== undefined
+            ? Math.max(0, Math.round(Number(item.deposit_per_unit) || 0))
+            : Math.max(0, Math.round(0.5 * originalPrice - unitPrice));
+        }
 
         calculatedBaseSubtotal += unitPrice * qty;
         calculatedTotalDeposit += depositPerUnit * qty;

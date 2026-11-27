@@ -37,9 +37,17 @@ export const BundleShowcase = ({ type = 'beli', rentDays = 1 }) => {
   const itemsList = Array.isArray(currentBundle.items) ? currentBundle.items : [];
   
   const baseTotalPrice = itemsList.reduce((sum, item) => sum + Number(item.p || 0), 0);
+  const originalPrice = itemsList.reduce((sum, item) => sum + Number(item.o || 0), 0);
   const discountPercent = Number(currentBundle.disc || 0);
   const priceAfterDiscount = baseTotalPrice - (baseTotalPrice * discountPercent) / 100;
   const finalPrice = type === 'sewa' ? priceAfterDiscount * rentDays : priceAfterDiscount;
+  const depositPerUnit = type === 'sewa'
+    ? itemsList.reduce((sum, item) => (
+      sum + Math.max(0, Math.round(
+        0.5 * Number(item.o || 0) - Number(item.p || 0) * rentDays
+      ))
+    ), 0)
+    : 0;
 
   const handleNext = () => {
     setCurrentIndex((prevIndex) => (prevIndex + 1) % bundles.length);
@@ -131,6 +139,7 @@ export const BundleShowcase = ({ type = 'beli', rentDays = 1 }) => {
                 type: type,
                 name: type === 'sewa' ? `[Sewa ${rentDays} Hari] Paket ${currentBundle.name}` : `[Paket] ${currentBundle.name}`,
                 price: finalPrice,
+                ...(type === 'sewa' && { original_price: originalPrice, deposit_per_unit: depositPerUnit }),
                 qty: 1
               });
             }}
