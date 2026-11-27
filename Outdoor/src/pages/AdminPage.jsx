@@ -59,8 +59,8 @@ export const AdminPage = () => {
   });
   
   const [bundleItems, setBundleItems] = useState([
-    { name: '', desc: '', price: '', icon: 'fa-tent' },
-    { name: '', desc: '', price: '', icon: 'fa-backpack' }
+    { productId: '' },
+    { productId: '' }
   ]);
 
   // --- STATE PEMANDU (GUIDE) ---
@@ -138,6 +138,12 @@ export const AdminPage = () => {
     }
   }, [user]);
 
+  const bundleProducts = products.filter(product => (
+    bundleForm.type === 'sewa'
+      ? product.is_rentable === true
+      : Number(product.price) > 0
+  ));
+
   // --- HANDLERS PRODUK ---
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -204,13 +210,28 @@ export const AdminPage = () => {
 
   // --- HANDLERS BUNDLING ---
   const handleAddItemRow = () => {
-    setBundleItems([...bundleItems, { name: '', desc: '', price: '', icon: 'fa-check' }]);
+    setBundleItems([...bundleItems, { productId: '' }]);
   };
 
-  const handleItemChange = (index, field, value) => {
-    const newItems = [...bundleItems];
-    newItems[index][field] = value;
-    setBundleItems(newItems);
+  const handleBundleTypeChange = (type) => {
+    const availableProductIds = new Set(products
+      .filter(product => (
+        type === 'sewa'
+          ? product.is_rentable === true
+          : Number(product.price) > 0
+      ))
+      .map(product => String(product.id)));
+
+    setBundleForm(current => ({ ...current, type }));
+    setBundleItems(current => current.map(item => (
+      availableProductIds.has(String(item.productId)) ? item : { productId: '' }
+    )));
+  };
+
+  const handleItemChange = (index, productId) => {
+    setBundleItems(current => current.map((item, itemIndex) => (
+      itemIndex === index ? { productId } : item
+    )));
   };
 
   const handleRemoveItemRow = (index) => {
@@ -229,12 +250,15 @@ export const AdminPage = () => {
       discount_percentage: Number(bundle.disc ?? 0),
       type: bundle.type || 'beli'
     });
-    setBundleItems((bundle.items || []).map(item => ({
-      name: item.n || '',
-      desc: item.d || '',
-      price: item.p ?? '',
-      icon: item.i || 'fa-check'
-    })));
+    const availableProducts = products.filter(product => (
+      (bundle.type || 'beli') === 'sewa'
+        ? product.is_rentable === true
+        : Number(product.price) > 0
+    ));
+    setBundleItems((bundle.items || []).map(item => {
+      const product = availableProducts.find(candidate => candidate.name === item.n);
+      return { productId: product ? String(product.id) : '' };
+    }));
     document.getElementById('bundle-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -242,18 +266,32 @@ export const AdminPage = () => {
     setEditingBundleId(null);
     setBundleForm({ bundle_key: '', label: 'PAKET HEMAT', name: '', tag: '', badge: 'Hemat 20%', discount_percentage: 20, type: 'beli' });
     setBundleItems([
-      { name: '', desc: '', price: '', icon: 'fa-tent' },
-      { name: '', desc: '', price: '', icon: 'fa-backpack' }
+      { productId: '' },
+      { productId: '' }
     ]);
   };
 
   const handleBundleSubmit = async (e) => {
     e.preventDefault();
+    const selectedProducts = bundleItems.map(item => bundleProducts.find(
+      product => String(product.id) === String(item.productId)
+    ));
+    if (selectedProducts.some(product => !product)) {
+      alert('Pilih barang yang sudah terdaftar untuk setiap item paket.');
+      return;
+    }
+
     try {
       const payload = {
         ...bundleForm,
         bundle_key: bundleForm.name.toLowerCase().replace(/\s+/g, '-'),
-        items: bundleItems
+        items: selectedProducts.map(product => ({
+          name: product.name,
+          desc: product.description || '',
+          price: bundleForm.type === 'sewa' ? product.rent_price_per_day : product.price,
+          original_price: product.price,
+          icon: 'fa-check'
+        }))
       };
 
       const response = await fetch(
@@ -711,7 +749,7 @@ export const AdminPage = () => {
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Tipe Bundling</label>
-                <select value={bundleForm.type} onChange={e => setBundleForm({...bundleForm, type: e.target.value})} className="w-full border rounded-xl px-4 py-2.5 outline-none focus:border-brand-500 bg-white font-semibold">
+                <select value={bundleForm.type} onChange={e => handleBundleTypeChange(e.target.value)} className="w-full border rounded-xl px-4 py-2.5 outline-none focus:border-brand-500 bg-white font-semibold">
                   <option value="beli">Bundling Jual (Beli Alat)</option>
                   <option value="sewa">Bundling Sewa (Sewa Alat)</option>
                 </select>
@@ -744,14 +782,49 @@ export const AdminPage = () => {
               </div>
 
               <div className="flex flex-col gap-3">
-                {bundleItems.map((item, index) => (
-                  <div key={index} className="flex gap-3 items-center bg-gray-50 p-3 rounded-xl border border-gray-100">
-                    <input type="text" required value={item.name} onChange={e => handleItemChange(index, 'name', e.target.value)} placeholder="Nama Barang" className="flex-grow border rounded-lg px-3 py-2 text-sm bg-white" />
-                    <input type="text" value={item.desc} onChange={e => handleItemChange(index, 'desc', e.target.value)} placeholder="Deskripsi Singkat" className="w-1/3 border rounded-lg px-3 py-2 text-sm bg-white hidden sm:block" />
-                    <input type="number" required value={item.price} onChange={e => handleItemChange(index, 'price', e.target.value)} placeholder="Harga (Rp)" className="w-32 border rounded-lg px-3 py-2 text-sm bg-white" />
-                    <button type="button" onClick={() => handleRemoveItemRow(index)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition"><i className="fa-solid fa-trash"></i></button>
-                  </div>
-                ))}
+                {bundleItems.map((item, index) => {
+                  const selectedProduct = bundleProducts.find(
+                    product => String(product.id) === String(item.productId)
+                  );
+                  const itemPrice = selectedProduct
+                    ? (bundleForm.type === 'sewa' ? selectedProduct.rent_price_per_day : selectedProduct.price)
+                    : null;
+
+                  return (
+                    <div key={index} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_12rem_auto] gap-3 items-end bg-gray-50 p-3 rounded-xl border border-gray-100">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1">Daftar Barang</label>
+                        <select
+                          required
+                          value={item.productId}
+                          onChange={e => handleItemChange(index, e.target.value)}
+                          className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                        >
+                          <option value="">Pilih barang {bundleForm.type === 'sewa' ? 'sewa' : 'jual'}</option>
+                          {bundleProducts.map(product => (
+                            <option key={product.id} value={String(product.id)}>
+                              {product.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1">
+                          Harga {bundleForm.type === 'sewa' ? 'Sewa / Hari' : 'Jual'}
+                        </label>
+                        <div className="border rounded-lg px-3 py-2 text-sm bg-white text-gray-700 min-h-[38px]">
+                          {itemPrice === null ? 'Pilih barang' : `Rp ${Number(itemPrice).toLocaleString('id-ID')}`}
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => handleRemoveItemRow(index)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition"><i className="fa-solid fa-trash"></i></button>
+                    </div>
+                  );
+                })}
+                {bundleProducts.length === 0 && (
+                  <p className="text-sm text-amber-700">
+                    Belum ada barang {bundleForm.type === 'sewa' ? 'sewa' : 'jual'} yang terdaftar. Tambahkan barang terlebih dahulu di menu Produk.
+                  </p>
+                )}
               </div>
             </div>
 
